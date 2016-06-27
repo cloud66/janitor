@@ -18,6 +18,8 @@ var (
 	flagIncludes string
 	flagCloud    string
 	flagPrompt   bool
+	flagMock     bool
+	flagMaxAge   int
 )
 
 func main() {
@@ -25,6 +27,8 @@ func main() {
 	flag.StringVar(&flagExcludes, "excludes", "^(PERMANENT|DND).*", "Regexp to exclude servers to delete by name")
 	flag.StringVar(&flagIncludes, "includes", "", "Regexp to include servers to delete by name")
 	flag.StringVar(&flagCloud, "cloud", "", "Cloud to work on")
+	flag.BoolVar(&flagMock, "mock", true, "Don't actually delete anything, just show what *would* happen")
+	flag.IntVar(&flagMaxAge, "max-age", 3, "Maximum allowed server age. Anything older will be deleted!")
 
 	flag.Parse()
 
@@ -72,10 +76,20 @@ func main() {
 	for _, server := range servers {
 		if includes.MatchString(server.Name) {
 			if !excludes.MatchString(server.Name) {
-				fmt.Printf("Found server %s\n", server.Name)
+				if server.Age > float64(flagMaxAge) {
+					if flagMock {
+						fmt.Printf("%s (%f days old) ▶ Deleted! (MOCK)\n", server.Name, server.Age)
+					} else {
+						fmt.Printf("%s (%f days old) ▶ ", server.Name, server.Age)
+						err := executor.DeleteServer(ctx, server)
+						if err != nil {
+							fmt.Printf("ERROR: %s\n", err.Error())
+						} else {
+							fmt.Printf("Deleted!\n")
+						}
+					}
+				}
 			}
 		}
-
-		// TODO Delete
 	}
 }

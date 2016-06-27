@@ -1,0 +1,13 @@
+build:
+  version: 2016-06-27
+  steps:
+    builder:
+      name: janitor-builder
+      dockerfile: Dockerfile.builder
+      artifacts:
+        - /app/janitor
+    executor:
+      name: janitor-executor
+      dockerfile: Dockerfile.executor
+      depends_on:
+        - janitor-builder

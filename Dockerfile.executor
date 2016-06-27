@@ -1,0 +1,13 @@
+#use the alpine base image
+FROM alpine:3.3
+MAINTAINER Vic van Gool
+
+#switch to our app directory
+RUN mkdir -p /app
+WORKDIR /app
+
+#copy the binary
+ADD ./janitor /app
+RUN chown daemon:daemon /app/janitor && chmod 700 /app/janitor
+
+USER daemon
