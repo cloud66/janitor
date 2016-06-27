@@ -15,12 +15,15 @@ var (
 	clouds       map[string]core.Executor
 	flagDOPat    string
 	flagExcludes string
+	flagIncludes string
 	flagCloud    string
+	flagPrompt   bool
 )
 
 func main() {
 	flag.StringVar(&flagDOPat, "do-pat", "", "DigitalOcean Personal Access Token")
 	flag.StringVar(&flagExcludes, "excludes", "^(PERMANENT|DND).*", "Regexp to exclude servers to delete by name")
+	flag.StringVar(&flagIncludes, "includes", "", "Regexp to include servers to delete by name")
 	flag.StringVar(&flagCloud, "cloud", "", "Cloud to work on")
 
 	flag.Parse()
@@ -41,8 +44,20 @@ func main() {
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "PAT", flagDOPat)
-	excludes, _ := regexp.Compile(flagExcludes)
+	var includes, excludes *regexp.Regexp
+	if flagIncludes != "" {
+		includes, _ = regexp.Compile(flagIncludes)
+	} else {
+		includes, _ = regexp.Compile(".*")
+	}
+
+	if flagExcludes != "" {
+		excludes, _ = regexp.Compile(flagExcludes)
+	} else {
+		excludes, _ = regexp.Compile("")
+	}
 	ctx = context.WithValue(ctx, "excludes", excludes)
+	ctx = context.WithValue(ctx, "includes", includes)
 
 	executor := clouds[flagCloud]
 
@@ -55,8 +70,10 @@ func main() {
 
 	// Check them for exclude and includes
 	for _, server := range servers {
-		if !excludes.MatchString(server.Name) {
-			fmt.Printf("Found server %s\n", server.Name)
+		if includes.MatchString(server.Name) {
+			if !excludes.MatchString(server.Name) {
+				fmt.Printf("Found server %s\n", server.Name)
+			}
 		}
 
 		// TODO Delete

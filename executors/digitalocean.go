@@ -33,6 +33,13 @@ func (d DigitalOcean) ListServers(ctx context.Context) ([]core.Server, error) {
 
 func (d DigitalOcean) DeleteServer(ctx context.Context, server core.Server) error {
 	fmt.Printf("Deleting %s...\n", server.Name)
+	id, _ := strconv.Atoi(server.VendorID)
+
+	_, err := d.client(ctx).Droplets.Delete(id)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
