@@ -2,12 +2,12 @@ build:
   version: 2016-03-14
   steps:
     builder:
-      name: janitor-builder
+      name: builder
       dockerfile: Dockerfile.builder
       artifacts:
         - /app/janitor
     executor:
-      name: janitor-executor
+      name: executor
       dockerfile: Dockerfile.executor
       depends_on:
-        - janitor-builder
+        - builder
