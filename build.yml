@@ -1,5 +1,5 @@
 build:
-  version: 2016-06-27
+  version: 2016-03-14
   steps:
     builder:
       name: janitor-builder
