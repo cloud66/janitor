@@ -2,6 +2,8 @@
 FROM alpine:3.3
 MAINTAINER Vic van Gool
 
+RUN apk-install ca-certificates
+
 #switch to our app directory
 RUN mkdir -p /app
 WORKDIR /app
