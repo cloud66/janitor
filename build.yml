@@ -5,7 +5,7 @@ build:
       name: builder
       dockerfile: Dockerfile.builder
       artifacts:
-        - /app/janitor
+        - /go/src/github.com/cloud66/janitor/janitor
     executor:
       name: executor
       dockerfile: Dockerfile.executor
