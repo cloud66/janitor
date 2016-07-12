@@ -2,7 +2,9 @@
 FROM alpine:3.3
 MAINTAINER Vic van Gool
 
-RUN apk add ca-certificates
+RUN mkdir -p /etc/ssl/certs/
+RUN apk add --update ca-certificates
+RUN update-ca-certificates --fresh
 
 #switch to our app directory
 RUN mkdir -p /app
