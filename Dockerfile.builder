@@ -12,4 +12,5 @@ ADD . /app
 ENV CGO_ENABLED=0
 ENV GOOS=linux
 
+RUN go get
 RUN go build -a -o janitor
