@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/cloud66/janitor/core"
 	"github.com/cloud66/janitor/executors"
@@ -27,8 +29,22 @@ func main() {
 	flag.StringVar(&flagExcludes, "excludes", "^(PERMANENT|DND).*", "Regexp to exclude servers to delete by name")
 	flag.StringVar(&flagIncludes, "includes", "", "Regexp to include servers to delete by name")
 	flag.StringVar(&flagCloud, "cloud", "", "Cloud to work on")
-	flag.BoolVar(&flagMock, "mock", true, "Don't actually delete anything, just show what *would* happen")
-	flag.IntVar(&flagMaxAge, "max-age", 3, "Maximum allowed server age. Anything older will be deleted!")
+
+	var mock bool
+	if strings.ToLower(os.Getenv("MOCK")) == "true" {
+		mock = false
+	} else {
+		mock = true
+	}
+	flag.BoolVar(&flagMock, "mock", mock, "Don't actually delete anything, just show what *would* happen")
+
+	var maxAge int
+	if os.Getenv("MAX_AGE") != "" {
+		maxAge, _ = strconv.Atoi(os.Getenv("MAX_AGE"))
+	} else {
+		maxAge = 3
+	}
+	flag.IntVar(&flagMaxAge, "max-age", maxAge, "Maximum allowed server age (days). Anything older will be deleted!")
 	flag.Parse()
 
 	if flagCloud == "" {
