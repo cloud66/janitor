@@ -18,7 +18,7 @@ var (
 	clouds       map[string]core.Executor
 	flagExcludes string
 	flagIncludes string
-	flagCloud    string
+	flagClouds   string
 	flagPrompt   bool
 	flagMock     bool
 	flagMaxAge   int
@@ -44,7 +44,7 @@ func main() {
 	// config
 	flag.StringVar(&flagExcludes, "excludes", "^(PERMANENT|DND).*", "Regexp to exclude servers to delete by name")
 	flag.StringVar(&flagIncludes, "includes", "", "Regexp to include servers to delete by name")
-	flag.StringVar(&flagCloud, "cloud", "", "Cloud to work on")
+	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
 
 	mock := strings.ToLower(os.Getenv("MOCK")) != "false"
 	flag.BoolVar(&flagMock, "mock", mock, "Don't actually delete anything, just show what *would* happen")
@@ -58,7 +58,7 @@ func main() {
 	flag.IntVar(&flagMaxAge, "max-age", maxAge, "Maximum allowed server age (days). Anything older will be deleted!")
 	flag.Parse()
 
-	if flagCloud == "" {
+	if flagClouds == "" {
 		fmt.Println("No cloud provider is specified. Use the --cloud option")
 		os.Exit(1)
 	}
@@ -67,11 +67,6 @@ func main() {
 	// Just add new clouds here
 	clouds["digitalocean"] = executors.DigitalOcean{}
 	clouds["aws"] = executors.Aws{}
-
-	if _, ok := clouds[flagCloud]; !ok {
-		fmt.Printf("Unsupported cloud %s\n", flagCloud)
-		os.Exit(1)
-	}
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "DO_PAT", flagDOPat)
@@ -92,42 +87,52 @@ func main() {
 	ctx = context.WithValue(ctx, "excludes", excludes)
 	ctx = context.WithValue(ctx, "includes", includes)
 
-	executor := clouds[flagCloud]
+	userClouds := strings.Split(flagClouds, ",")
+	for _, userCloud := range userClouds {
+		// Output the cloud
+		prettyPrint(fmt.Sprintf("[[%s CLOUD]]\n", strings.ToUpper(userCloud)), flagMock)
 
-	// List all servers
-	servers, err := executor.ListServers(ctx)
-	if err != nil {
-		fmt.Printf("Cannot list servers due to %s\n", err.Error())
-		os.Exit(1)
-	}
+		if _, ok := clouds[userCloud]; !ok {
+			fmt.Printf("Unsupported cloud %s\n", flagClouds)
+			continue
+		}
 
-	// Check them for exclude and includes
-	sort.Sort(core.ServerSorter(servers))
-	for _, server := range servers {
-		name := fmt.Sprintf("[%s] [%s]", server.Region, server.Name)
+		executor := clouds[userCloud]
+		// List all servers
+		servers, err := executor.ListServers(ctx)
+		if err != nil {
+			fmt.Printf("Cannot list servers due to %s\n", err.Error())
+			continue
+		}
 
-		if includes.MatchString(server.Name) {
-			if !excludes.MatchString(server.Name) {
-				if server.Age > float64(flagMaxAge) {
-					if flagMock {
-						fmt.Printf("[MOCK] [%.2f days old] %s ▶  Would be deleted!\n", server.Age, name)
-					} else {
-						fmt.Printf("[%.2f days old] %s ▶  ", server.Age, name)
-						err := executor.DeleteServer(ctx, server)
-						if err != nil {
-							fmt.Printf("ERROR: %s\n", err.Error())
+		// Check them for exclude and includes
+		sort.Sort(core.ServerSorter(servers))
+		for _, server := range servers {
+			name := fmt.Sprintf("[%s] [%s]", server.Region, server.Name)
+
+			if includes.MatchString(server.Name) {
+				if !excludes.MatchString(server.Name) {
+					if server.Age > float64(flagMaxAge) {
+						if flagMock {
+							fmt.Printf("[MOCK] [%.2f days old] %s ▶  Would be deleted!\n", server.Age, name)
 						} else {
-							fmt.Printf("Deleted!\n")
+							fmt.Printf("[%.2f days old] %s ▶  ", server.Age, name)
+							err := executor.DeleteServer(ctx, server)
+							if err != nil {
+								fmt.Printf("ERROR: %s\n", err.Error())
+							} else {
+								fmt.Printf("Deleted!\n")
+							}
 						}
+					} else {
+						prettyPrint(fmt.Sprintf("[%.2f days old] %s ▶  Skipped (due to age)\n", server.Age, name), flagMock)
 					}
 				} else {
-					prettyPrint(fmt.Sprintf("[%.2f days old] %s ▶  Skipped (due to age)\n", server.Age, name), flagMock)
+					prettyPrint(fmt.Sprintf("[%.2f days old] %s ▶  Skipped (due to excludes)\n", server.Age, name), flagMock)
 				}
 			} else {
-				prettyPrint(fmt.Sprintf("[%.2f days old] %s ▶  Skipped (due to excludes)\n", server.Age, name), flagMock)
+				prettyPrint(fmt.Sprintf("[%.2f days old] %s ▶  Skipped (due to includes)\n", server.Age, name), flagMock)
 			}
-		} else {
-			prettyPrint(fmt.Sprintf("[%.2f days old] %s ▶  Skipped (due to includes)\n", server.Age, name), flagMock)
 		}
 	}
 }
