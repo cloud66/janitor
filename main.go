@@ -39,9 +39,9 @@ func main() {
 
 	var mock bool
 	if strings.ToLower(os.Getenv("MOCK")) == "true" {
-		mock = false
-	} else {
 		mock = true
+	} else {
+		mock = false
 	}
 	flag.BoolVar(&flagMock, "mock", mock, "Don't actually delete anything, just show what *would* happen")
 
