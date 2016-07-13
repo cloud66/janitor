@@ -44,7 +44,9 @@ func (a Aws) ListServers(context context.Context) ([]core.Server, error) {
 						name = *tag.Value
 					}
 				}
-				result = append(result, core.Server{VendorID: *inst.InstanceId, Name: name, Age: age, Region: region})
+				if *inst.State.Name == "running" {
+					result = append(result, core.Server{VendorID: *inst.InstanceId, Name: name, Age: age, Region: region})
+				}
 			}
 		}
 	}
