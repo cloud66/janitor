@@ -23,13 +23,12 @@ var (
 )
 
 func main() {
-	flag.StringVar(&flagDOPat, "do-pat", "", "DigitalOcean Personal Access Token")
+	flag.StringVar(&flagDOPat, "do-pat", os.Getenv("DO_PAT"), "DigitalOcean Personal Access Token")
 	flag.StringVar(&flagExcludes, "excludes", "^(PERMANENT|DND).*", "Regexp to exclude servers to delete by name")
 	flag.StringVar(&flagIncludes, "includes", "", "Regexp to include servers to delete by name")
 	flag.StringVar(&flagCloud, "cloud", "", "Cloud to work on")
 	flag.BoolVar(&flagMock, "mock", true, "Don't actually delete anything, just show what *would* happen")
 	flag.IntVar(&flagMaxAge, "max-age", 3, "Maximum allowed server age. Anything older will be deleted!")
-
 	flag.Parse()
 
 	if flagCloud == "" {
