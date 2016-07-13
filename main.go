@@ -99,23 +99,15 @@ func main() {
 
 	// Check them for exclude and includes
 	for _, server := range servers {
-		if server.Name == "VICTEST" {
-			fmt.Printf("%s (%f days old) ▶  ", server.Name, server.Age)
-			err := executor.DeleteServer(ctx, server)
-			if err != nil {
-				fmt.Printf("ERROR: %s\n", err.Error())
-			} else {
-				fmt.Printf("Deleted!\n")
-			}
-		}
+		name := fmt.Sprintf("[%s] [%s]", server.Region, server.Name)
 
 		if includes.MatchString(server.Name) {
 			if !excludes.MatchString(server.Name) {
 				if server.Age > float64(flagMaxAge) {
 					if flagMock {
-						fmt.Printf("[MOCK] %s (%f days old) ▶  Deleted!\n", server.Name, server.Age)
+						fmt.Printf("[MOCK] [%f days old] %s ▶  Deleted!\n", server.Age, name)
 					} else {
-						fmt.Printf("%s (%f days old) ▶  ", server.Name, server.Age)
+						fmt.Printf("[%f days old] %s ▶  ", server.Age, name)
 						err := executor.DeleteServer(ctx, server)
 						if err != nil {
 							fmt.Printf("ERROR: %s\n", err.Error())
@@ -124,13 +116,13 @@ func main() {
 						}
 					}
 				} else if flagMock {
-					fmt.Printf("[MOCK] %s (%f days old) ▶  Skipped due to age\n", server.Name, server.Age)
+					fmt.Printf("[MOCK] [%f days old] %s ▶  Skipped due to age\n", server.Age, name)
 				}
 			} else if flagMock {
-				fmt.Printf("[MOCK] %s (%f days old) ▶  Skipped due to excludes\n", server.Name, server.Age)
+				fmt.Printf("[MOCK] [%f days old] %s ▶  Skipped due to excludes\n", server.Age, name)
 			}
 		} else if flagMock {
-			fmt.Printf("[MOCK] %s (%f days old) ▶  Skipped due to includes\n", server.Name, server.Age)
+			fmt.Printf("[MOCK] [%f days old] %s ▶  Skipped due to includes\n", server.Age, name)
 		}
 	}
 }
