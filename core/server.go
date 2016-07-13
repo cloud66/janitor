@@ -6,4 +6,5 @@ type Server struct {
 	Name     string
 	Age      float64
 	Tags     []string
+	Region   string
 }

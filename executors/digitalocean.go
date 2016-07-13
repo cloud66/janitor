@@ -35,7 +35,7 @@ func (d DigitalOcean) ListServers(ctx context.Context) ([]core.Server, error) {
 				return nil, err
 			}
 			age := time.Now().Sub(createdAtDate).Hours() / 24.0
-			result = append(result, core.Server{VendorID: strconv.Itoa(droplet.ID), Name: droplet.Name, Age: age})
+			result = append(result, core.Server{VendorID: strconv.Itoa(droplet.ID), Name: droplet.Name, Age: age, Region: "Global"})
 		}
 	}
 
@@ -61,7 +61,7 @@ func (t *TokenSource) Token() (*oauth2.Token, error) {
 }
 
 func (d *DigitalOcean) client(context context.Context) *godo.Client {
-	pat := context.Value("PAT").(string)
+	pat := context.Value("DO_PAT").(string)
 	tokenSource := &TokenSource{
 		AccessToken: pat,
 	}
