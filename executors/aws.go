@@ -116,6 +116,15 @@ func (a Aws) ServerDelete(ctx context.Context, server core.Server) error {
 	secretKey := ctx.Value("JANITOR_AWS_SECRET_ACCESS_KEY").(string)
 	session := session.New(aws.NewConfig().WithCredentials(credentials.NewStaticCredentials(accessKey, secretKey, "")))
 	svc := ec2.New(session, &aws.Config{Region: aws.String(server.Region)})
+	modParams := &ec2.ModifyInstanceAttributeInput{
+		InstanceId: aws.String(server.VendorID),
+		DisableApiTermination: &ec2.AttributeBooleanValue{
+			Value: aws.Bool(false),
+		},
+		DryRun: aws.Bool(false),
+	}
+	svc.ModifyInstanceAttribute(modParams)
+
 	params := &ec2.TerminateInstancesInput{
 		InstanceIds: []*string{
 			aws.String(server.VendorID),
@@ -154,14 +163,6 @@ func (a Aws) ServerStart(ctx context.Context, server core.Server) error {
 	secretKey := ctx.Value("JANITOR_AWS_SECRET_ACCESS_KEY").(string)
 	session := session.New(aws.NewConfig().WithCredentials(credentials.NewStaticCredentials(accessKey, secretKey, "")))
 	svc := ec2.New(session, &aws.Config{Region: aws.String(server.Region)})
-
-	modParams := &ec2.ModifyInstanceAttributeInput{
-		DisableApiTermination: &ec2.AttributeBooleanValue{
-			Value: aws.Bool(false),
-		},
-	}
-	svc.ModifyInstanceAttribute(modParams)
-
 	params := &ec2.StartInstancesInput{
 		InstanceIds: []*string{
 			aws.String(server.VendorID),
