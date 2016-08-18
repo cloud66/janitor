@@ -15,14 +15,20 @@ import (
 )
 
 var (
-	clouds       map[string]core.Executor
-	flagExcludes string
-	flagIncludes string
-	flagClouds   string
-	flagPrompt   bool
-	flagMock     bool
-	flagMaxAge   int
-	// credentials
+	clouds     map[string]core.ExecutorInterface
+	flagAction string
+
+	flagShortMatch   string
+	flagLongMatch    string
+	flagMaxAgeShort  float64
+	flagMaxAgeNormal float64
+	flagMaxAgeLong   float64
+
+	flagClouds string
+	flagPrompt bool
+	flagMock   bool
+
+	//credentials
 	flagDOPat              string
 	flagAWSAccessKeyID     string
 	flagAWSSecretAccessKey string
@@ -37,60 +43,86 @@ func prettyPrint(message string, mock bool) {
 }
 
 func main() {
-	// credentials
-	flag.StringVar(&flagDOPat, "do-pat", os.Getenv("DO_PAT"), "DigitalOcean Personal Access Token")
-	flag.StringVar(&flagAWSAccessKeyID, "aws-access-key-id", os.Getenv("AWS_ACCESS_KEY_ID"), "AWS Access Key ID")
-	flag.StringVar(&flagAWSSecretAccessKey, "aws-secret-access-key", os.Getenv("AWS_SECRET_ACCESS_KEY"), "AWS Secret Access Key")
-	// config
-	flag.StringVar(&flagExcludes, "excludes", "^(PERMANENT|DND).*", "Regexp to exclude servers to delete by name")
-	flag.StringVar(&flagIncludes, "includes", "", "Regexp to include servers to delete by name")
+	//action
+	flag.StringVar(&flagAction, "action", "", "Action to perform: delete|stop|start")
+	//credentials
+	flag.StringVar(&flagDOPat, "do-pat", os.Getenv("JANITOR_DO_PAT"), "DigitalOcean Personal Access Token")
+	flag.StringVar(&flagAWSAccessKeyID, "aws-access-key-id", os.Getenv("JANITOR_AWS_ACCESS_KEY_ID"), "AWS Access Key ID")
+	flag.StringVar(&flagAWSSecretAccessKey, "aws-secret-access-key", os.Getenv("JANITOR_AWS_SECRET_ACCESS_KEY"), "AWS Secret Access Key")
+	//config
+	flag.BoolVar(&flagMock, "mock", strings.ToLower(os.Getenv("MOCK")) != "false", "Don't actually delete anything, just show what *would* happen")
 	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
+	flag.StringVar(&flagLongMatch, "match-long", "^[A-Za-z_-]{0,4}(LONG|long|PERM|perm|DND|dnd)", "Regexp for long term servers to delete by name")
+	flag.StringVar(&flagShortMatch, "match-short", "^[A-Za-z_-]{0,4}(LONG|long|PERM|perm|DND|dnd)", "Regexp for short term servers to delete by name")
 
-	mock := strings.ToLower(os.Getenv("MOCK")) != "false"
-	flag.BoolVar(&flagMock, "mock", mock, "Don't actually delete anything, just show what *would* happen")
-
-	var maxAge int
-	if os.Getenv("MAX_AGE") != "" {
-		maxAge, _ = strconv.Atoi(os.Getenv("MAX_AGE"))
+	var maxAgeShort, maxAgeNormal, maxAgeLong float64
+	if os.Getenv("MAX_AGE_SHORT") != "" {
+		maxAgeShort, _ = strconv.ParseFloat(os.Getenv("MAX_AGE_SHORT"), 64)
 	} else {
-		maxAge = 3
+		maxAgeShort = 0.125
 	}
-	flag.IntVar(&flagMaxAge, "max-age", maxAge, "Maximum allowed server age (days). Anything older will be deleted!")
+	if os.Getenv("MAX_AGE_NORMAL") != "" {
+		maxAgeNormal, _ = strconv.ParseFloat(os.Getenv("MAX_AGE_NORMAL"), 64)
+	} else {
+		maxAgeNormal = 0.75
+	}
+	if os.Getenv("MAX_AGE_LONG") != "" {
+		maxAgeLong, _ = strconv.ParseFloat(os.Getenv("MAX_AGE_LONG"), 64)
+	} else {
+		maxAgeLong = 5.0
+	}
+
+	flag.Float64Var(&flagMaxAgeShort, "max-age-short", maxAgeShort, "Short allowed server age (days). Decimal allowed. Anything older will be deleted!")
+	flag.Float64Var(&flagMaxAgeNormal, "max-age-regular", maxAgeNormal, "Normal allowed server age (days). Decimal allowed. Anything older will be deleted!")
+	flag.Float64Var(&flagMaxAgeLong, "max-age-long", maxAgeLong, "Long allowed server age (days). Decimal allowed. Anything older will be deleted!")
 	flag.Parse()
 
 	if flagClouds == "" {
-		fmt.Println("No cloud provider is specified. Use the --cloud option")
+		fmt.Println("No cloud provider is specified. Use the --clouds option")
 		os.Exit(1)
 	}
 
-	clouds = make(map[string]core.Executor)
-	// Just add new clouds here
+	clouds = make(map[string]core.ExecutorInterface)
+	//Just add new clouds here
 	clouds["digitalocean"] = executors.DigitalOcean{}
 	clouds["aws"] = executors.Aws{}
 
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "DO_PAT", flagDOPat)
-	ctx = context.WithValue(ctx, "AWS_ACCESS_KEY_ID", flagAWSAccessKeyID)
-	ctx = context.WithValue(ctx, "AWS_SECRET_ACCESS_KEY", flagAWSSecretAccessKey)
-	var includes, excludes *regexp.Regexp
-	if flagIncludes != "" {
-		includes, _ = regexp.Compile(flagIncludes)
+	ctx = context.WithValue(ctx, "JANITOR_DO_PAT", flagDOPat)
+	ctx = context.WithValue(ctx, "JANITOR_AWS_ACCESS_KEY_ID", flagAWSAccessKeyID)
+	ctx = context.WithValue(ctx, "JANITOR_AWS_SECRET_ACCESS_KEY", flagAWSSecretAccessKey)
+
+	var shortRegex, longRegex *regexp.Regexp
+	if flagShortMatch != "" {
+		shortRegex, _ = regexp.Compile(flagShortMatch)
 	} else {
-		includes, _ = regexp.Compile(".*")
+		shortRegex, _ = regexp.Compile("")
+	}
+	if flagLongMatch != "" {
+		longRegex, _ = regexp.Compile(flagLongMatch)
+	} else {
+		longRegex, _ = regexp.Compile("")
 	}
 
-	if flagExcludes != "" {
-		excludes, _ = regexp.Compile(flagExcludes)
+	ctx = context.WithValue(ctx, "shortRegex", shortRegex)
+	ctx = context.WithValue(ctx, "longRegex", longRegex)
+
+	if flagAction == "delete" {
+		prettyPrint(fmt.Sprintf("%s ACTION\n", strings.ToUpper(flagAction)), flagMock)
+	} else if flagAction == "stop" {
+		prettyPrint(fmt.Sprintf("%s ACTION\n", strings.ToUpper(flagAction)), flagMock)
+	} else if flagAction == "start" {
+		prettyPrint(fmt.Sprintf("%s ACTION\n", strings.ToUpper(flagAction)), flagMock)
 	} else {
-		excludes, _ = regexp.Compile("")
+		fmt.Printf("Unrecognised action '%s'\n", flagAction)
+		os.Exit(1)
 	}
-	ctx = context.WithValue(ctx, "excludes", excludes)
-	ctx = context.WithValue(ctx, "includes", includes)
 
 	userClouds := strings.Split(flagClouds, ",")
 	for _, userCloud := range userClouds {
-		// Output the cloud
-		prettyPrint(fmt.Sprintf("[[%s CLOUD]]\n", strings.ToUpper(userCloud)), flagMock)
+		//Output the cloud
+		fmt.Println()
+		prettyPrint(fmt.Sprintf("[%s]\n", strings.ToUpper(userCloud)), flagMock)
 
 		if _, ok := clouds[userCloud]; !ok {
 			fmt.Printf("Unsupported cloud %s\n", flagClouds)
@@ -98,41 +130,185 @@ func main() {
 		}
 
 		executor := clouds[userCloud]
-		// List all servers
-		servers, err := executor.ListServers(ctx)
+		ctx = context.WithValue(ctx, "executor", executor)
+
+		servers, err := executor.ServersGet(ctx, nil, nil)
 		if err != nil {
-			fmt.Printf("Cannot list servers due to %s\n", err.Error())
-			continue
-		}
-
-		// Check them for exclude and includes
-		sort.Sort(core.ServerSorter(servers))
-		for _, server := range servers {
-			name := fmt.Sprintf("[%s] [%s]", server.Region, server.Name)
-
-			if includes.MatchString(server.Name) {
-				if !excludes.MatchString(server.Name) {
-					if server.Age > float64(flagMaxAge) {
-						if flagMock {
-							fmt.Printf("[MOCK] [%.2f days old] %s ▶  Would be deleted!\n", server.Age, name)
-						} else {
-							fmt.Printf("[%.2f days old] %s ▶  ", server.Age, name)
-							err := executor.DeleteServer(ctx, server)
-							if err != nil {
-								fmt.Printf("ERROR: %s\n", err.Error())
-							} else {
-								fmt.Printf("Deleted!\n")
-							}
-						}
-					} else {
-						prettyPrint(fmt.Sprintf("[%.2f days old] %s ▶  Skipped (due to age)\n", server.Age, name), flagMock)
-					}
-				} else {
-					prettyPrint(fmt.Sprintf("[%.2f days old] %s ▶  Skipped (due to excludes)\n", server.Age, name), flagMock)
-				}
-			} else {
-				prettyPrint(fmt.Sprintf("[%.2f days old] %s ▶  Skipped (due to includes)\n", server.Age, name), flagMock)
+			fmt.Printf("Cannot get servers due to %s\n", err.Error())
+		} else {
+			prettyPrint(fmt.Sprintf("[%d SERVERS]\n", len(servers)), flagMock)
+			sort.Sort(core.ServerSorter(servers))
+			if flagAction == "delete" {
+				deleteServers(ctx, longRegex, shortRegex, servers)
+			} else if flagAction == "stop" {
+				stopServers(ctx, longRegex, shortRegex, servers)
+			} else if flagAction == "start" {
+				startServers(ctx, longRegex, shortRegex, servers)
 			}
 		}
+
+		if flagAction == "delete" {
+			loadBalancers, err := executor.LoadBalancersGet(ctx)
+			if err != nil {
+				if err.Error() != "Not available" {
+					fmt.Printf("Cannot get load balancers due to %s\n", err.Error())
+				}
+			} else {
+				prettyPrint(fmt.Sprintf("[%d LOAD BALANCERS]\n", len(loadBalancers)), flagMock)
+				sort.Sort(core.LoadBalancerSorter(loadBalancers))
+				deleteLoadBalancers(ctx, loadBalancers)
+			}
+		}
+	}
+}
+
+func deleteServers(ctx context.Context, longRegex *regexp.Regexp, shortRegex *regexp.Regexp, servers []core.Server) {
+	for _, server := range servers {
+		if longRegex.MatchString(server.Name) {
+			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "LONG", server.Name), flagMock)
+			if server.Age > float64(flagMaxAgeLong) {
+				if flagMock {
+					fmt.Printf("Mock deleted!\n")
+				} else {
+					deleteServer(ctx, server)
+				}
+			} else {
+				fmt.Printf("skipped (due to age)\n")
+			}
+		} else if shortRegex.MatchString(server.Name) {
+			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "SHORT", server.Name), flagMock)
+			if server.Age > float64(flagMaxAgeShort) {
+				if flagMock {
+					fmt.Printf("Mock deleted!\n")
+				} else {
+					deleteServer(ctx, server)
+				}
+			} else {
+				fmt.Printf("skipped (due to age)\n")
+			}
+		} else {
+			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "NORMAL", server.Name), flagMock)
+			if server.Age > float64(flagMaxAgeNormal) {
+				if flagMock {
+					fmt.Printf("Mock deleted!\n")
+				} else {
+					deleteServer(ctx, server)
+				}
+			} else {
+				fmt.Printf("skipped (due to age)\n")
+			}
+		}
+	}
+}
+
+func stopServers(ctx context.Context, longRegex *regexp.Regexp, shortRegex *regexp.Regexp, servers []core.Server) {
+	for _, server := range servers {
+		if longRegex.MatchString(server.Name) {
+			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "LONG", server.Name), flagMock)
+			if flagMock {
+				fmt.Printf("Mock stopped!\n")
+			} else {
+				stopServer(ctx, server)
+			}
+		} else if shortRegex.MatchString(server.Name) {
+			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "SHORT", server.Name), flagMock)
+			if flagMock {
+				fmt.Printf("Mock stopped!\n")
+			} else {
+				stopServer(ctx, server)
+			}
+		} else {
+			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "NORMAL", server.Name), flagMock)
+			if flagMock {
+				fmt.Printf("Mock stopped!\n")
+			} else {
+				stopServer(ctx, server)
+			}
+		}
+	}
+}
+
+func startServers(ctx context.Context, longRegex *regexp.Regexp, shortRegex *regexp.Regexp, servers []core.Server) {
+	for _, server := range servers {
+		if longRegex.MatchString(server.Name) {
+			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "LONG", server.Name), flagMock)
+			if flagMock {
+				fmt.Printf("Mock started!\n")
+			} else {
+				startServer(ctx, server)
+			}
+		} else if shortRegex.MatchString(server.Name) {
+			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "SHORT", server.Name), flagMock)
+			if flagMock {
+				fmt.Printf("Mock started!\n")
+			} else {
+				startServer(ctx, server)
+			}
+		} else {
+			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "NORMAL", server.Name), flagMock)
+			if flagMock {
+				fmt.Printf("Mock started!\n")
+			} else {
+				startServer(ctx, server)
+			}
+		}
+	}
+}
+
+func deleteServer(ctx context.Context, server core.Server) {
+	executor := ctx.Value("executor").(core.ExecutorInterface)
+	err := executor.ServerDelete(ctx, server)
+	if err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+	} else {
+		fmt.Printf("Deleted!\n")
+	}
+}
+
+func stopServer(ctx context.Context, server core.Server) {
+	executor := ctx.Value("executor").(core.ExecutorInterface)
+	err := executor.ServerStop(ctx, server)
+	if err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+	} else {
+		fmt.Printf("Stopped!\n")
+	}
+}
+
+func startServer(ctx context.Context, server core.Server) {
+	executor := ctx.Value("executor").(core.ExecutorInterface)
+	err := executor.ServerStart(ctx, server)
+	if err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+	} else {
+		fmt.Printf("Started!\n")
+	}
+}
+
+func deleteLoadBalancers(ctx context.Context, loadBalancers []core.LoadBalancer) {
+	for _, loadBalancer := range loadBalancers {
+		prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%d instance attached] [%s] ▶  ", loadBalancer.Age, loadBalancer.Region, loadBalancer.InstanceCount, loadBalancer.Name), flagMock)
+		// any loadbalancer older than 30 mins
+		if loadBalancer.Age < float64(0.02) {
+			fmt.Printf("skipped (due to age)\n")
+		} else if loadBalancer.InstanceCount > 0 {
+			fmt.Printf("skipped (still has attached instances)\n")
+		} else {
+			if flagMock {
+				fmt.Printf("Mock deleted!\n")
+			} else {
+				deleteLoadBalancer(ctx, loadBalancer)
+			}
+		}
+	}
+}
+
+func deleteLoadBalancer(ctx context.Context, loadBalancer core.LoadBalancer) {
+	executor := ctx.Value("executor").(core.ExecutorInterface)
+	err := executor.LoadBalancerDelete(ctx, loadBalancer)
+	if err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+	} else {
+		fmt.Printf("Deleted!\n")
 	}
 }

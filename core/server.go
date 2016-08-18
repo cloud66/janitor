@@ -7,6 +7,7 @@ type Server struct {
 	Age      float64
 	Tags     []string
 	Region   string
+	State    string // "RUNNING|TERMINATED"
 }
 
 //ServerSorter sorts servers by age.

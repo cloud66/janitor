@@ -17,10 +17,11 @@ type TokenSource struct {
 
 //DigitalOcean encapsulates all DO cloud calls
 type DigitalOcean struct {
+	*core.Executor
 }
 
-//ListServers returns collection of Server objects
-func (d DigitalOcean) ListServers(ctx context.Context) ([]core.Server, error) {
+//ServersGet returns collection of Server objects
+func (d DigitalOcean) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
 	droplets, _, err := d.client(ctx).Droplets.List(&godo.ListOptions{})
 	if err != nil {
 		return nil, err
@@ -35,15 +36,15 @@ func (d DigitalOcean) ListServers(ctx context.Context) ([]core.Server, error) {
 				return nil, err
 			}
 			age := time.Now().Sub(createdAtDate).Hours() / 24.0
-			result = append(result, core.Server{VendorID: strconv.Itoa(droplet.ID), Name: droplet.Name, Age: age, Region: "Global"})
+			result = append(result, core.Server{VendorID: strconv.Itoa(droplet.ID), Name: droplet.Name, Age: age, Region: "Global", State: "RUNNING"})
 		}
 	}
 
 	return result, nil
 }
 
-// DeleteServer remove the specified server
-func (d DigitalOcean) DeleteServer(ctx context.Context, server core.Server) error {
+//ServerDelete remove the specified server
+func (d DigitalOcean) ServerDelete(ctx context.Context, server core.Server) error {
 	id, _ := strconv.Atoi(server.VendorID)
 	_, err := d.client(ctx).Droplets.Delete(id)
 	if err != nil {
@@ -52,7 +53,7 @@ func (d DigitalOcean) DeleteServer(ctx context.Context, server core.Server) erro
 	return nil
 }
 
-// Token retrieves the oauth token
+//Token retrieves the oauth token
 func (t *TokenSource) Token() (*oauth2.Token, error) {
 	token := &oauth2.Token{
 		AccessToken: t.AccessToken,
@@ -61,7 +62,7 @@ func (t *TokenSource) Token() (*oauth2.Token, error) {
 }
 
 func (d *DigitalOcean) client(context context.Context) *godo.Client {
-	pat := context.Value("DO_PAT").(string)
+	pat := context.Value("JANITOR_DO_PAT").(string)
 	tokenSource := &TokenSource{
 		AccessToken: pat,
 	}
