@@ -53,6 +53,10 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 					}
 				}
 
+				if len(instance.BlockDeviceMappings) == 0 {
+					continue
+				}
+
 				attachTime := *instance.BlockDeviceMappings[0].Ebs.AttachTime
 				age := time.Now().Sub(attachTime).Hours() / 24.0
 				name := vendorID

@@ -108,7 +108,11 @@ func main() {
 	ctx = context.WithValue(ctx, "longRegex", longRegex)
 
 	if flagAction == "delete" {
-		prettyPrint(fmt.Sprintf("%s ACTION\n", strings.ToUpper(flagAction)), flagMock)
+		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
+		prettyPrint(fmt.Sprintf("SHORT ALLOWANCE: %.2f days\n", flagMaxAgeShort), flagMock)
+		prettyPrint(fmt.Sprintf("NORMAL ALLOWANCE: %.2f days\n", flagMaxAgeNormal), flagMock)
+		prettyPrint(fmt.Sprintf("LONG ALLOWANCE: %.2f days\n", flagMaxAgeLong), flagMock)
+
 	} else if flagAction == "stop" {
 		prettyPrint(fmt.Sprintf("%s ACTION\n", strings.ToUpper(flagAction)), flagMock)
 	} else if flagAction == "start" {
