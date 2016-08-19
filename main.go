@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
@@ -15,9 +16,10 @@ import (
 )
 
 const (
-	actionDelete = "delete"
-	actionStop   = "stop"
-	actionStart  = "start"
+	actionWebServer = "webserver"
+	actionDelete    = "delete"
+	actionStop      = "stop"
+	actionStart     = "start"
 )
 
 var (
@@ -48,9 +50,20 @@ func prettyPrint(message string, mock bool) {
 	}
 }
 
+func handler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprint(w, "Its a TRAP!")
+}
+
 func main() {
 	//action
 	flag.StringVar(&flagAction, "action", "", "Action to perform: delete|stop|start")
+
+	if flagAction == actionWebServer {
+		http.HandleFunc("/", handler)
+		http.ListenAndServe(":80", nil)
+		os.Exit(0)
+	}
+
 	//credentials
 	flag.StringVar(&flagDOPat, "do-pat", os.Getenv("JANITOR_DO_PAT"), "DigitalOcean Personal Access Token")
 	flag.StringVar(&flagAWSAccessKeyID, "aws-access-key-id", os.Getenv("JANITOR_AWS_ACCESS_KEY_ID"), "AWS Access Key ID")
@@ -145,7 +158,7 @@ func main() {
 		servers, err := executor.ServersGet(ctx, nil, nil)
 		if err != nil {
 			fmt.Printf("Cannot get servers due to %s\n", err.Error())
-		} else if len(servers) > 0 {
+		} else {
 			prettyPrint(fmt.Sprintf("[%d SERVERS]\n", len(servers)), flagMock)
 			sort.Sort(core.ServerSorter(servers))
 			if flagAction == actionDelete {
@@ -163,7 +176,7 @@ func main() {
 				if err.Error() != "Action not available" {
 					fmt.Printf("Cannot get load balancers due to %s\n", err.Error())
 				}
-			} else if len(loadBalancers) > 0 {
+			} else {
 				prettyPrint(fmt.Sprintf("[%d LOAD BALANCERS]\n", len(loadBalancers)), flagMock)
 				sort.Sort(core.LoadBalancerSorter(loadBalancers))
 				deleteLoadBalancers(ctx, loadBalancers)
