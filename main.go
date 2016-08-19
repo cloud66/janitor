@@ -57,13 +57,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	//action
 	flag.StringVar(&flagAction, "action", "", "Action to perform: delete|stop|start")
-
-	if flagAction == actionWebServer {
-		http.HandleFunc("/", handler)
-		http.ListenAndServe(":80", nil)
-		os.Exit(0)
-	}
-
 	//credentials
 	flag.StringVar(&flagDOPat, "do-pat", os.Getenv("JANITOR_DO_PAT"), "DigitalOcean Personal Access Token")
 	flag.StringVar(&flagAWSAccessKeyID, "aws-access-key-id", os.Getenv("JANITOR_AWS_ACCESS_KEY_ID"), "AWS Access Key ID")
@@ -95,6 +88,13 @@ func main() {
 	flag.Float64Var(&flagMaxAgeNormal, "max-age-regular", maxAgeNormal, "Normal allowed server age (days). Decimal allowed. Anything older will be deleted!")
 	flag.Float64Var(&flagMaxAgeLong, "max-age-long", maxAgeLong, "Long allowed server age (days). Decimal allowed. Anything older will be deleted!")
 	flag.Parse()
+
+	if flagAction == actionWebServer {
+		http.HandleFunc("/", handler)
+		res := http.ListenAndServe(":80", nil)
+		fmt.Println(res)
+		os.Exit(0)
+	}
 
 	if flagClouds == "" {
 		fmt.Println("No cloud provider is specified. Use the --clouds option")
