@@ -91,7 +91,7 @@ func main() {
 
 	if flagAction == actionWebServer {
 		http.HandleFunc("/", handler)
-		res := http.ListenAndServe(":80", nil)
+		res := http.ListenAndServe(":1234", nil)
 		fmt.Println(res)
 		os.Exit(0)
 	}
