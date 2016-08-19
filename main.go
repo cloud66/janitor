@@ -14,6 +14,12 @@ import (
 	"golang.org/x/net/context"
 )
 
+const (
+	actionDelete = "delete"
+	actionStop   = "stop"
+	actionStart  = "start"
+)
+
 var (
 	clouds     map[string]core.ExecutorInterface
 	flagAction string
@@ -107,15 +113,15 @@ func main() {
 	ctx = context.WithValue(ctx, "shortRegex", shortRegex)
 	ctx = context.WithValue(ctx, "longRegex", longRegex)
 
-	if flagAction == "delete" {
+	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
 		prettyPrint(fmt.Sprintf("SHORT ALLOWANCE: %.2f days\n", flagMaxAgeShort), flagMock)
 		prettyPrint(fmt.Sprintf("NORMAL ALLOWANCE: %.2f days\n", flagMaxAgeNormal), flagMock)
 		prettyPrint(fmt.Sprintf("LONG ALLOWANCE: %.2f days\n", flagMaxAgeLong), flagMock)
 
-	} else if flagAction == "stop" {
+	} else if flagAction == actionStop {
 		prettyPrint(fmt.Sprintf("%s ACTION\n", strings.ToUpper(flagAction)), flagMock)
-	} else if flagAction == "start" {
+	} else if flagAction == actionStart {
 		prettyPrint(fmt.Sprintf("%s ACTION\n", strings.ToUpper(flagAction)), flagMock)
 	} else {
 		fmt.Printf("Unrecognised action '%s'\n", flagAction)
@@ -139,25 +145,25 @@ func main() {
 		servers, err := executor.ServersGet(ctx, nil, nil)
 		if err != nil {
 			fmt.Printf("Cannot get servers due to %s\n", err.Error())
-		} else {
+		} else if len(servers) > 0 {
 			prettyPrint(fmt.Sprintf("[%d SERVERS]\n", len(servers)), flagMock)
 			sort.Sort(core.ServerSorter(servers))
-			if flagAction == "delete" {
+			if flagAction == actionDelete {
 				deleteServers(ctx, longRegex, shortRegex, servers)
-			} else if flagAction == "stop" {
+			} else if flagAction == actionStop {
 				stopServers(ctx, longRegex, shortRegex, servers)
-			} else if flagAction == "start" {
+			} else if flagAction == actionStart {
 				startServers(ctx, longRegex, shortRegex, servers)
 			}
 		}
 
-		if flagAction == "delete" {
+		if flagAction == actionDelete {
 			loadBalancers, err := executor.LoadBalancersGet(ctx)
 			if err != nil {
 				if err.Error() != "Action not available" {
 					fmt.Printf("Cannot get load balancers due to %s\n", err.Error())
 				}
-			} else {
+			} else if len(loadBalancers) > 0 {
 				prettyPrint(fmt.Sprintf("[%d LOAD BALANCERS]\n", len(loadBalancers)), flagMock)
 				sort.Sort(core.LoadBalancerSorter(loadBalancers))
 				deleteLoadBalancers(ctx, loadBalancers)
