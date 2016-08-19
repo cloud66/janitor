@@ -196,7 +196,7 @@ func deleteServers(ctx context.Context, longRegex *regexp.Regexp, shortRegex *re
 					deleteServer(ctx, server)
 				}
 			} else {
-				fmt.Printf("skipped (due to age)\n")
+				fmt.Printf("skipped (age)\n")
 			}
 		} else if shortRegex.MatchString(server.Name) {
 			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "SHORT", server.Name), flagMock)
@@ -207,7 +207,7 @@ func deleteServers(ctx context.Context, longRegex *regexp.Regexp, shortRegex *re
 					deleteServer(ctx, server)
 				}
 			} else {
-				fmt.Printf("skipped (due to age)\n")
+				fmt.Printf("skipped (age)\n")
 			}
 		} else {
 			prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%s] [%s] ▶  ", server.Age, server.Region, "NORMAL", server.Name), flagMock)
@@ -218,7 +218,7 @@ func deleteServers(ctx context.Context, longRegex *regexp.Regexp, shortRegex *re
 					deleteServer(ctx, server)
 				}
 			} else {
-				fmt.Printf("skipped (due to age)\n")
+				fmt.Printf("skipped (age)\n")
 			}
 		}
 	}
@@ -313,9 +313,9 @@ func deleteLoadBalancers(ctx context.Context, loadBalancers []core.LoadBalancer)
 		prettyPrint(fmt.Sprintf("[%.2f days old] [%s] [%d instance attached] [%s] ▶  ", loadBalancer.Age, loadBalancer.Region, loadBalancer.InstanceCount, loadBalancer.Name), flagMock)
 		// any loadbalancer older than 30 mins
 		if loadBalancer.Age < float64(0.02) {
-			fmt.Printf("skipped (due to age)\n")
+			fmt.Printf("skipped (age)\n")
 		} else if loadBalancer.InstanceCount > 0 {
-			fmt.Printf("skipped (still has attached instances)\n")
+			fmt.Printf("skipped (instances)\n")
 		} else {
 			if flagMock {
 				fmt.Printf("Mock deleted!\n")
