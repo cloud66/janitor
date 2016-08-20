@@ -128,9 +128,9 @@ func main() {
 
 	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
-		prettyPrint(fmt.Sprintf("SHORT ALLOWANCE: %.3f days (%.3f hours)\n", flagMaxAgeShort, flagMaxAgeShort*24.0), flagMock)
-		prettyPrint(fmt.Sprintf("NORMAL ALLOWANCE: %.3f days (%.3f hours)\n", flagMaxAgeNormal, flagMaxAgeNormal*24.0), flagMock)
-		prettyPrint(fmt.Sprintf("LONG ALLOWANCE: %.3f days (%.3f hours)\n", flagMaxAgeLong, flagMaxAgeLong*24.0), flagMock)
+		prettyPrint(fmt.Sprintf("SHORT ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeShort, flagMaxAgeShort*24.0), flagMock)
+		prettyPrint(fmt.Sprintf("NORMAL ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeNormal, flagMaxAgeNormal*24.0), flagMock)
+		prettyPrint(fmt.Sprintf("LONG ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeLong, flagMaxAgeLong*24.0), flagMock)
 
 	} else if flagAction == actionStop {
 		prettyPrint(fmt.Sprintf("%s ACTION\n", strings.ToUpper(flagAction)), flagMock)
