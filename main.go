@@ -64,8 +64,8 @@ func main() {
 	//config
 	flag.BoolVar(&flagMock, "mock", strings.ToLower(os.Getenv("MOCK")) != "false", "Don't actually delete anything, just show what *would* happen")
 	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
-	flag.StringVar(&flagLongMatch, "match-long", "([-_]|^)(LONG|long|PERM|perm|DND|dnd)([-_]|$)", "Regexp for long term servers to delete by name")
-	flag.StringVar(&flagShortMatch, "match-short", "([-_]|^)(SHORT|short|TMP|tmp|TEMP|temp)([-_]|$)", "Regexp for short term servers to delete by name")
+	flag.StringVar(&flagLongMatch, "match-long", "([-_ ]|^)(LONG|long|PERM|perm|DND|dnd)([-_ ]|$)", "Regexp for long term servers to delete by name")
+	flag.StringVar(&flagShortMatch, "match-short", "([-_ ]|^)(SHORT|short|TMP|tmp|TEMP|temp)([-_ ]|$)", "Regexp for short term servers to delete by name")
 
 	var maxAgeShort, maxAgeNormal, maxAgeLong float64
 	if os.Getenv("MAX_AGE_SHORT") != "" {
