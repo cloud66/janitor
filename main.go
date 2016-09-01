@@ -71,12 +71,12 @@ func main() {
 	if os.Getenv("MAX_AGE_SHORT") != "" {
 		maxAgeShort, _ = strconv.ParseFloat(os.Getenv("MAX_AGE_SHORT"), 64)
 	} else {
-		maxAgeShort = 0.125
+		maxAgeShort = 0.75
 	}
 	if os.Getenv("MAX_AGE_NORMAL") != "" {
 		maxAgeNormal, _ = strconv.ParseFloat(os.Getenv("MAX_AGE_NORMAL"), 64)
 	} else {
-		maxAgeNormal = 0.75
+		maxAgeNormal = 0.17
 	}
 	if os.Getenv("MAX_AGE_LONG") != "" {
 		maxAgeLong, _ = strconv.ParseFloat(os.Getenv("MAX_AGE_LONG"), 64)
@@ -84,8 +84,8 @@ func main() {
 		maxAgeLong = 5.0
 	}
 
-	flag.Float64Var(&flagMaxAgeShort, "max-age-short", maxAgeShort, "Short allowed server age (days). Decimal allowed. Anything older will be deleted!")
 	flag.Float64Var(&flagMaxAgeNormal, "max-age-regular", maxAgeNormal, "Normal allowed server age (days). Decimal allowed. Anything older will be deleted!")
+	flag.Float64Var(&flagMaxAgeShort, "max-age-short", maxAgeShort, "Short allowed server age (days). Decimal allowed. Anything older will be deleted!")
 	flag.Float64Var(&flagMaxAgeLong, "max-age-long", maxAgeLong, "Long allowed server age (days). Decimal allowed. Anything older will be deleted!")
 	flag.Parse()
 
@@ -128,8 +128,8 @@ func main() {
 
 	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
-		prettyPrint(fmt.Sprintf("SHORT ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeShort, flagMaxAgeShort*24.0), flagMock)
 		prettyPrint(fmt.Sprintf("NORMAL ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeNormal, flagMaxAgeNormal*24.0), flagMock)
+		prettyPrint(fmt.Sprintf("SHORT ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeShort, flagMaxAgeShort*24.0), flagMock)
 		prettyPrint(fmt.Sprintf("LONG ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeLong, flagMaxAgeLong*24.0), flagMock)
 
 	} else if flagAction == actionStop {
