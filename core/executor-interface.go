@@ -10,7 +10,6 @@ type ExecutorInterface interface {
 	ServerStart(ctx context.Context, server Server) error
 	LoadBalancersGet(ctx context.Context) ([]LoadBalancer, error)
 	LoadBalancerDelete(ctx context.Context, loadBalancer LoadBalancer) error
-	//GetSshKeys(ctx context.Context) ([]GetSshKeys, error) {}
-	//DeleteSshKeys(ctx context.Context, sshKey SshKey) error {}
-
+	SshKeysGet(ctx context.Context) ([]SshKey, error)
+	SshKeyDelete(ctx context.Context, sshKey SshKey) error
 }

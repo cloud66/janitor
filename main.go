@@ -20,17 +20,21 @@ const (
 	actionDelete    = "delete"
 	actionStop      = "stop"
 	actionStart     = "start"
+
+	//Defaults
+	defaultSshKeyKeepCount = 10
 )
 
 var (
 	clouds     map[string]core.ExecutorInterface
 	flagAction string
 
-	flagShortMatch   string
-	flagLongMatch    string
-	flagMaxAgeShort  float64
-	flagMaxAgeNormal float64
-	flagMaxAgeLong   float64
+	flagShortMatch       string
+	flagLongMatch        string
+	flagMaxAgeShort      float64
+	flagMaxAgeNormal     float64
+	flagMaxAgeLong       float64
+	flagSshKeysKeepCount int
 
 	flagClouds string
 	flagPrompt bool
@@ -68,6 +72,7 @@ func main() {
 	flag.StringVar(&flagShortMatch, "match-short", "([-_ ]|^)(SHORT|short|TMP|tmp|TEMP|temp)([-_ ]|$)", "Regexp for short term servers to delete by name")
 
 	var maxAgeShort, maxAgeNormal, maxAgeLong float64
+	var sshKeysKeepCount int
 	if os.Getenv("MAX_AGE_SHORT") != "" {
 		maxAgeShort, _ = strconv.ParseFloat(os.Getenv("MAX_AGE_SHORT"), 64)
 	} else {
@@ -83,10 +88,20 @@ func main() {
 	} else {
 		maxAgeLong = 5.0
 	}
+	if os.Getenv("SSH_KEYS_KEEP_COUNT") != "" {
+		sshKeysKeepCountParsed, _ := strconv.ParseInt(os.Getenv("SSH_KEYS_KEEP_COUNT"), 10, 0)
+		sshKeysKeepCount = int(sshKeysKeepCountParsed)
+		if sshKeysKeepCount < 0 {
+			sshKeysKeepCount = defaultSshKeyKeepCount
+		}
+	} else {
+		sshKeysKeepCount = defaultSshKeyKeepCount
+	}
 
 	flag.Float64Var(&flagMaxAgeNormal, "max-age-regular", maxAgeNormal, "Normal allowed server age (days). Decimal allowed. Anything older will be deleted!")
 	flag.Float64Var(&flagMaxAgeShort, "max-age-short", maxAgeShort, "Short allowed server age (days). Decimal allowed. Anything older will be deleted!")
 	flag.Float64Var(&flagMaxAgeLong, "max-age-long", maxAgeLong, "Long allowed server age (days). Decimal allowed. Anything older will be deleted!")
+	flag.IntVar(&flagSshKeysKeepCount, "ssh-keys-keep-count", sshKeysKeepCount, "Number of non-user defined SSH keys to keep.")
 	flag.Parse()
 
 	if flagAction == actionWebServer {
@@ -180,6 +195,19 @@ func main() {
 				prettyPrint(fmt.Sprintf("[%d LOAD BALANCERS]\n", len(loadBalancers)), flagMock)
 				sort.Sort(core.LoadBalancerSorter(loadBalancers))
 				deleteLoadBalancers(ctx, loadBalancers)
+			}
+		}
+
+		if flagAction == actionDelete {
+			sshKeys, err := executor.SshKeysGet(ctx)
+			if err != nil {
+				if err.Error() != "Action not available" {
+					fmt.Printf("Cannot get SSH keys due to %s\n", err.Error())
+				}
+			} else {
+				prettyPrint(fmt.Sprintf("[%d SSH KEYS]\n", len(sshKeys)), flagMock)
+				sort.Sort(core.SshKeySorter(sshKeys))
+				deleteSshKeys(ctx, sshKeys)
 			}
 		}
 	}
@@ -333,5 +361,46 @@ func deleteLoadBalancer(ctx context.Context, loadBalancer core.LoadBalancer) {
 		fmt.Printf("ERROR: %s\n", err.Error())
 	} else {
 		fmt.Printf("Deleted!\n")
+	}
+}
+
+func deleteSshKey(ctx context.Context, sshKey core.SshKey) {
+	executor := ctx.Value("executor").(core.ExecutorInterface)
+	err := executor.SshKeyDelete(ctx, sshKey)
+	if err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+	} else {
+		fmt.Printf("Deleted!\n")
+	}
+}
+
+func deleteSshKeys(ctx context.Context, sshKeys []core.SshKey) {
+	// IMPORTANT: This implementation assumes that sorting by VendorID is equivalent to sorting by the creation date (some clouds don't return `created_at` for SSH keys)
+	// Since there is no `created_at` field, keep last `flagSshKeysKeepCount` to avoid deleting an SSH key before it is used
+
+	nonUserDefinedSshKeyCount := 0
+	for _, sshKey := range sshKeys {
+		if strings.HasPrefix(sshKey.Name, "c66-") {
+			nonUserDefinedSshKeyCount += 1
+		}
+	}
+
+	deletedSshKeys := 0
+	for _, sshKey := range sshKeys {
+		prettyPrint(fmt.Sprintf("[%s] [%s] ▶  ", sshKey.VendorID, sshKey.Name), flagMock)
+		if strings.HasPrefix(sshKey.Name, "c66-") {
+			if (nonUserDefinedSshKeyCount - flagSshKeysKeepCount) > deletedSshKeys {
+				deletedSshKeys += 1
+				if flagMock {
+					fmt.Printf("Mock deleted!\n")
+				} else {
+					deleteSshKey(ctx, sshKey)
+				}
+			} else {
+				fmt.Printf(fmt.Sprintf("skipped (keep last %d)\n", flagSshKeysKeepCount))
+			}
+		} else {
+			fmt.Printf("skipped (name)\n")
+		}
 	}
 }
