@@ -53,6 +53,51 @@ func (d DigitalOcean) ServerDelete(ctx context.Context, server core.Server) erro
 	return nil
 }
 
+//SshKeysGet gets SSH keys
+func (d DigitalOcean) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
+	doAllSshKeys := []godo.Key{}
+	opt := &godo.ListOptions{}
+	for {
+		doSshKeys, resp, err := d.client(ctx).Keys.List(opt)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, doSshKey := range doSshKeys {
+			doAllSshKeys = append(doAllSshKeys, doSshKey)
+		}
+
+		// If we are at the last page, break out the for loop
+		if resp.Links == nil || resp.Links.IsLastPage() {
+			break
+		}
+
+		page, err := resp.Links.CurrentPage()
+		if err != nil {
+			return nil, err
+		}
+
+		opt.Page = page + 1
+	}
+
+	result := make([]core.SshKey, 0, len(doAllSshKeys))
+	for _, doSshKey := range doAllSshKeys {
+		result = append(result, core.SshKey{VendorID: strconv.Itoa(doSshKey.ID), Name: doSshKey.Name})
+	}
+
+	return result, nil
+}
+
+//SshKeyDelete deletes an SSH key
+func (d DigitalOcean) SshKeyDelete(ctx context.Context, sshKey core.SshKey) error {
+	id, _ := strconv.Atoi(sshKey.VendorID)
+	_, err := d.client(ctx).Keys.DeleteByID(id)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 //Token retrieves the oauth token
 func (t *TokenSource) Token() (*oauth2.Token, error) {
 	token := &oauth2.Token{

@@ -39,5 +39,12 @@ func (e *Executor) LoadBalancerDelete(ctx context.Context, loadBalancer LoadBala
 	return errors.New("Action not available")
 }
 
-// 	func (e *Executor) GetSshKeys(ctx context.Context) ([]GetSshKeys, error) {}
-// 	func (e *Executor) DeleteSshKeys(ctx context.Context, sshKey SshKey) error {}
+//SshKeysGet gets SSH keys
+func (e *Executor) SshKeysGet(ctx context.Context) ([]SshKey, error) {
+	return nil, errors.New("Action not available")
+}
+
+//SshKeyDelete deletes an SSH key
+func (e *Executor) SshKeyDelete(ctx context.Context, sshKey SshKey) error {
+	return errors.New("Action not available")
+}
