@@ -22,7 +22,7 @@ type DigitalOcean struct {
 
 //ServersGet returns collection of Server objects
 func (d DigitalOcean) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
-	droplets, _, err := d.client(ctx).Droplets.List(&godo.ListOptions{})
+	droplets, _, err := d.client(ctx).Droplets.List(ctx, &godo.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (d DigitalOcean) ServersGet(ctx context.Context, vendorIDs []string, region
 //ServerDelete remove the specified server
 func (d DigitalOcean) ServerDelete(ctx context.Context, server core.Server) error {
 	id, _ := strconv.Atoi(server.VendorID)
-	_, err := d.client(ctx).Droplets.Delete(id)
+	_, err := d.client(ctx).Droplets.Delete(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -58,7 +58,7 @@ func (d DigitalOcean) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
 	doAllSshKeys := []godo.Key{}
 	opt := &godo.ListOptions{}
 	for {
-		doSshKeys, resp, err := d.client(ctx).Keys.List(opt)
+		doSshKeys, resp, err := d.client(ctx).Keys.List(ctx, opt)
 		if err != nil {
 			return nil, err
 		}
@@ -91,7 +91,7 @@ func (d DigitalOcean) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
 //SshKeyDelete deletes an SSH key
 func (d DigitalOcean) SshKeyDelete(ctx context.Context, sshKey core.SshKey) error {
 	id, _ := strconv.Atoi(sshKey.VendorID)
-	_, err := d.client(ctx).Keys.DeleteByID(id)
+	_, err := d.client(ctx).Keys.DeleteByID(ctx, id)
 	if err != nil {
 		return err
 	}
