@@ -25,7 +25,7 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 
 	results := make([]core.Server, 0, 0)
 	if regions == nil {
-		regions = []string{"ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2", "eu-west-1", "sa-east-1", "us-east-1", "us-west-1", "us-west-2", "eu-central-1"}
+		regions = []string{"ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2", "eu-west-1", "eu-west-2", "sa-east-1", "us-east-1", "us-east-2", "us-west-1", "us-west-2", "eu-central-1", "ca-central-1", "ap-south-1"}
 	}
 	for _, region := range regions {
 		svc := ec2.New(session, &aws.Config{Region: aws.String(region)})
@@ -84,7 +84,7 @@ func (a Aws) LoadBalancersGet(ctx context.Context) ([]core.LoadBalancer, error) 
 	session := session.New(aws.NewConfig().WithCredentials(credentials.NewStaticCredentials(accessKey, secretKey, "")))
 
 	results := make([]core.LoadBalancer, 0, 0)
-	regions := []string{"ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2", "eu-west-1", "sa-east-1", "us-east-1", "us-west-1", "us-west-2", "eu-central-1"}
+	regions := []string{"ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2", "eu-west-1", "eu-west-2", "sa-east-1", "us-east-1", "us-east-2", "us-west-1", "us-west-2", "eu-central-1", "ca-central-1", "ap-south-1"}
 
 	for _, region := range regions {
 		svc := elb.New(session, &aws.Config{Region: aws.String(region)})
