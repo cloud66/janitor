@@ -81,7 +81,7 @@ func main() {
 	if os.Getenv("MAX_AGE_NORMAL") != "" {
 		maxAgeNormal, _ = strconv.ParseFloat(os.Getenv("MAX_AGE_NORMAL"), 64)
 	} else {
-		maxAgeNormal = 0.17
+		maxAgeNormal = 0.38
 	}
 	if os.Getenv("MAX_AGE_LONG") != "" {
 		maxAgeLong, _ = strconv.ParseFloat(os.Getenv("MAX_AGE_LONG"), 64)
