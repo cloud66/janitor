@@ -1,5 +1,5 @@
 #use the alpine base image
-FROM alpine:3.4
+FROM alpine:latest
 MAINTAINER Vic van Gool
 
 RUN mkdir -p /etc/ssl/certs/

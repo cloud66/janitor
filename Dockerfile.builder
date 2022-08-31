@@ -1,5 +1,5 @@
 #use the golang base image
-FROM golang:1.8
+FROM golang:1.18
 MAINTAINER Vic van Gool
 
 #switch to our app directory
