@@ -30,7 +30,7 @@ func (e *Executor) ServerStart(ctx context.Context, server Server) error {
 }
 
 //LoadBalancersGet gets load balancers
-func (e *Executor) LoadBalancersGet(ctx context.Context) ([]LoadBalancer, error) {
+func (e *Executor) LoadBalancersGet(ctx context.Context, flagMock bool) ([]LoadBalancer, error) {
 	return nil, errors.New("action not available")
 }
 

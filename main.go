@@ -161,7 +161,7 @@ func main() {
 		}
 
 		if flagAction == actionDelete {
-			loadBalancers, err := executor.LoadBalancersGet(ctx)
+			loadBalancers, err := executor.LoadBalancersGet(ctx, flagMock)
 			if err != nil {
 				if err.Error() != "Action not available" {
 					fmt.Printf("Cannot get load balancers due to %s\n", err.Error())
