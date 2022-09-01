@@ -27,7 +27,6 @@ var (
 	clouds     map[string]core.ExecutorInterface
 	flagAction string
 
-	flagLongMatch        string
 	flagMaxAgeNormal     float64
 	flagMaxAgeLong       float64
 	flagSshKeysKeepCount int
@@ -64,7 +63,6 @@ func main() {
 	//config
 	flag.BoolVar(&flagMock, "mock", strings.ToLower(os.Getenv("MOCK")) != "false", "Don't actually delete anything, just show what *would* happen")
 	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
-	flag.StringVar(&flagLongMatch, "match-long", "([-_ ]|^)(LONG|long|PERM|perm|DND|dnd)([-_ ]|$)", "Regexp for long term servers to delete by name")
 
 	var maxAgeNormal, maxAgeLong float64
 	var sshKeysKeepCount int
@@ -116,14 +114,10 @@ func main() {
 	ctx = context.WithValue(ctx, "JANITOR_AWS_SECRET_ACCESS_KEY", flagAWSSecretAccessKey)
 
 	var longRegex, permRegex *regexp.Regexp
-	if flagLongMatch != "" {
-		longRegex, _ = regexp.Compile(flagLongMatch)
-	} else {
-		longRegex, _ = regexp.Compile("")
-	}
-	// anything containing perm is PERMANENT
+	// anything containing long is LONG
+	longRegex, _ = regexp.Compile(`(?i)long`)
+	// anything containing permanent is PERMANENT
 	permRegex, _ = regexp.Compile(`(?i)permanent`)
-	ctx = context.WithValue(ctx, "longRegex", longRegex)
 
 	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
