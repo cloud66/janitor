@@ -272,15 +272,15 @@ func deleteLoadBalancers(ctx context.Context, longRegex *regexp.Regexp, permRege
 
 func printServer(server core.Server, state string) {
 	ageString := fmt.Sprintf("%.2f days old", server.Age)
-	prettyPrint(fmt.Sprintf("[%15s] [%s] [%s] [%s] ▶ ", ageString, server.Region, state, server.Name), flagMock)
+	prettyPrint(fmt.Sprintf("[%s] [%s] [%s] [%s] ▶ ", ageString, server.Region, state, server.Name), flagMock)
 }
 
 func printLoadBalancer(loadBalancer core.LoadBalancer, state string) {
 	ageString := fmt.Sprintf("%.2f days old", loadBalancer.Age)
 	if loadBalancer.InstanceCount < 999 {
-		prettyPrint(fmt.Sprintf("[%15s] [%s] [%s] [%s] [%3d instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.InstanceCount, loadBalancer.Name), flagMock)
+		prettyPrint(fmt.Sprintf("[%s] [%s] [%s] [%s] [%3d instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.InstanceCount, loadBalancer.Name), flagMock)
 	} else {
-		prettyPrint(fmt.Sprintf("[%15s] [%s] [%s] [%s] [n/a instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.Name), flagMock)
+		prettyPrint(fmt.Sprintf("[%s] [%s] [%s] [%s] [n/a instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.Name), flagMock)
 	}
 }
 
@@ -317,7 +317,7 @@ func deleteSshKeys(ctx context.Context, sshKeys []core.SshKey) {
 
 	deletedSshKeys := 0
 	for _, sshKey := range sshKeys {
-		prettyPrint(fmt.Sprintf("[%s] [%s] ▶  ", sshKey.VendorID, sshKey.Name), flagMock)
+		prettyPrint(fmt.Sprintf("[%s] [%s] ▶ ", sshKey.VendorID, sshKey.Name), flagMock)
 		if strings.HasPrefix(sshKey.Name, "c66-") {
 			if (nonUserDefinedSshKeyCount - flagSshKeysKeepCount) > deletedSshKeys {
 				deletedSshKeys += 1

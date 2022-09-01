@@ -134,18 +134,6 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 				if err == nil {
 					for _, targetGroup := range targetGroupOutput.TargetGroups {
 						targetGroupArns = append(targetGroupArns, *targetGroup.TargetGroupArn)
-
-						targetHealthOutput, err := albClient.DescribeTargetHealth(ctx, &elasticloadbalancingv2.DescribeTargetHealthInput{TargetGroupArn: targetGroup.TargetGroupArn})
-						if err == nil {
-							for _, targetHealthDescription := range targetHealthOutput.TargetHealthDescriptions {
-								s, _ := json.MarshalIndent(targetHealthDescription, "", "\t")
-								fmt.Println(targetGroup.TargetGroupArn)
-								fmt.Print(string(s))
-								fmt.Println()
-								//fmt.Printf("%+v\n", targetHealthDescription)
-							}
-						}
-
 					}
 				}
 
@@ -191,7 +179,7 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					}
 					if foundMarkedForDeletionTag {
 						// we should delete this!
-						prettyPrint(fmt.Sprintf("Orphaned Target Group [%s] ▶ DELETING\n", *targetGroup.TargetGroupArn), flagMock)
+						prettyPrint(fmt.Sprintf("[%s] ▶ Orphaned Target Group: DELETING\n", *targetGroup.TargetGroupArn), flagMock)
 						if !flagMock {
 							_, err := albClient.DeleteTargetGroup(ctx, &elasticloadbalancingv2.DeleteTargetGroupInput{TargetGroupArn: targetGroup.TargetGroupArn})
 							if err != nil {
@@ -201,7 +189,7 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 
 					} else {
 						// add the foundMarkedForDeletionTag
-						prettyPrint(fmt.Sprintf("Orphaned Target Group [%s] ▶ SETTING TAG\n", *targetGroup.TargetGroupArn), flagMock)
+						prettyPrint(fmt.Sprintf("[%s] ▶ Orphaned Target Group: SETTING TAG\n", *targetGroup.TargetGroupArn), flagMock)
 						if !flagMock {
 							trueString := "true"
 							_, err = albClient.AddTags(ctx, &elasticloadbalancingv2.AddTagsInput{
