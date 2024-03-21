@@ -16,12 +16,12 @@ import (
 	"time"
 )
 
-//Aws encapsulates all AWS cloud calls
+// Aws encapsulates all AWS cloud calls
 type Aws struct {
 	*core.Executor
 }
 
-//ServersGet return all servers in account
+// ServersGet return all servers in account
 func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
 	results := make([]core.Server, 0, 0)
 	if regions == nil {
@@ -76,7 +76,7 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 	return results, nil
 }
 
-//LoadBalancersGet return all load balancers in account
+// LoadBalancersGet return all load balancers in account
 func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBalancer, error) {
 	results := make([]core.LoadBalancer, 0, 0)
 	for _, region := range a.allRegions() {
@@ -207,7 +207,7 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 	return results, nil
 }
 
-//ServerDelete remove the specified server
+// ServerDelete remove the specified server
 func (a Aws) ServerDelete(ctx context.Context, server core.Server) error {
 	ec2Client := a.ec2Client(ctx, server.Region)
 	_, err := ec2Client.ModifyInstanceAttribute(ctx, &ec2.ModifyInstanceAttributeInput{
@@ -228,7 +228,7 @@ func (a Aws) ServerDelete(ctx context.Context, server core.Server) error {
 	return nil
 }
 
-//LoadBalancerDelete delete the load balancer
+// LoadBalancerDelete delete the load balancer
 func (a Aws) LoadBalancerDelete(ctx context.Context, loadBalancer core.LoadBalancer) error {
 	if loadBalancer.Type == "elb" {
 		elbClient := a.elbClient(ctx, loadBalancer.Region)
@@ -298,7 +298,35 @@ func (a Aws) credentials(ctx context.Context) *aws.CredentialsCache {
 
 func (a Aws) allRegions() []string {
 	//return []string{"eu-west-2"}
-	return []string{"af-south-1", "ap-east-1", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-south-1", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ca-central-1", "eu-central-1", "eu-north-1", "eu-south-1", "eu-west-1", "eu-west-2", "eu-west-3", "me-central-1", "me-south-1", "sa-east-1", "us-east-1", "us-east-2", "us-gov-east-1", "us-gov-west-1", "us-west-1", "us-west-2"}
+	return []string{
+		"af-south-1",
+		"ap-east-1",
+		"ap-northeast-1",
+		"ap-northeast-2",
+		"ap-northeast-3",
+		"ap-south-1",
+		"ap-southeast-1",
+		"ap-southeast-2",
+		"ap-southeast-3",
+		"ap-southeast-4",
+		"ca-central-1",
+		"eu-central-1",
+		"eu-north-1",
+		"eu-south-1",
+		"eu-south-2",
+		"eu-west-1",
+		"eu-west-2",
+		"eu-west-3",
+		"me-central-1",
+		"me-south-1",
+		"sa-east-1",
+		"us-east-1",
+		"us-east-2",
+		"us-gov-east-1",
+		"us-gov-west-1",
+		"us-west-1",
+		"us-west-2",
+	}
 }
 
 func prettyPrint(message string, mock bool) {
