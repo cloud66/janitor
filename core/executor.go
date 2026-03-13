@@ -48,3 +48,13 @@ func (e *Executor) SshKeysGet(ctx context.Context) ([]SshKey, error) {
 func (e *Executor) SshKeyDelete(ctx context.Context, sshKey SshKey) error {
 	return errors.New("action not available")
 }
+
+//VolumesGet gets volumes
+func (e *Executor) VolumesGet(ctx context.Context) ([]Volume, error) {
+	return nil, errors.New("action not available")
+}
+
+//VolumeDelete deletes a volume
+func (e *Executor) VolumeDelete(ctx context.Context, volume Volume) error {
+	return errors.New("action not available")
+}

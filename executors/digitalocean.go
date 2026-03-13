@@ -98,6 +98,58 @@ func (d DigitalOcean) SshKeyDelete(ctx context.Context, sshKey core.SshKey) erro
 	return nil
 }
 
+//VolumesGet returns unattached volumes
+func (d DigitalOcean) VolumesGet(ctx context.Context) ([]core.Volume, error) {
+	// collect all volumes with pagination
+	allVolumes := []godo.Volume{}
+	opt := &godo.ListVolumeParams{}
+	for {
+		doVolumes, resp, err := d.client(ctx).Storage.ListVolumes(ctx, opt)
+		if err != nil {
+			return nil, err
+		}
+
+		allVolumes = append(allVolumes, doVolumes...)
+
+		// break at the last page
+		if resp.Links == nil || resp.Links.IsLastPage() {
+			break
+		}
+
+		page, err := resp.Links.CurrentPage()
+		if err != nil {
+			return nil, err
+		}
+
+		opt.ListOptions = &godo.ListOptions{Page: page + 1}
+	}
+
+	// filter to only unattached volumes and map to core.Volume
+	result := make([]core.Volume, 0, len(allVolumes))
+	for _, vol := range allVolumes {
+		// skip volumes that are attached to a droplet
+		if len(vol.DropletIDs) > 0 {
+			continue
+		}
+
+		age := time.Now().Sub(vol.CreatedAt).Hours() / 24.0
+		result = append(result, core.Volume{
+			VendorID: vol.ID,
+			Name:     vol.Name,
+			Age:      age,
+			Region:   vol.Region.Slug,
+		})
+	}
+
+	return result, nil
+}
+
+//VolumeDelete removes the specified volume
+func (d DigitalOcean) VolumeDelete(ctx context.Context, volume core.Volume) error {
+	_, err := d.client(ctx).Storage.DeleteVolume(ctx, volume.VendorID)
+	return err
+}
+
 //Token retrieves the oauth token
 func (t *TokenSource) Token() (*oauth2.Token, error) {
 	token := &oauth2.Token{

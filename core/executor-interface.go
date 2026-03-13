@@ -12,4 +12,6 @@ type ExecutorInterface interface {
 	LoadBalancerDelete(ctx context.Context, loadBalancer LoadBalancer) error
 	SshKeysGet(ctx context.Context) ([]SshKey, error)
 	SshKeyDelete(ctx context.Context, sshKey SshKey) error
+	VolumesGet(ctx context.Context) ([]Volume, error)
+	VolumeDelete(ctx context.Context, volume Volume) error
 }
