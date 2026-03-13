@@ -179,6 +179,19 @@ func main() {
 				deleteSshKeys(ctx, sshKeys)
 			}
 		}
+
+		if flagAction == actionDelete {
+			volumes, err := executor.VolumesGet(ctx)
+			if err != nil {
+				if err.Error() != "action not available" {
+					fmt.Printf("Cannot get volumes due to %s\n", err.Error())
+				}
+			} else {
+				prettyPrint(fmt.Sprintf("[%d UNATTACHED VOLUMES]\n", len(volumes)), flagMock)
+				sort.Sort(core.VolumeSorter(volumes))
+				deleteVolumes(ctx, volumes)
+			}
+		}
 	}
 }
 
@@ -296,6 +309,40 @@ func deleteSshKey(ctx context.Context, sshKey core.SshKey) {
 	} else {
 		fmt.Printf("Deleted!\n")
 	}
+}
+
+func deleteVolumes(ctx context.Context, volumes []core.Volume) {
+	// minimum age threshold: 1 hour (in days)
+	minAge := 1.0 / 24.0
+
+	for _, volume := range volumes {
+		printVolume(volume)
+		if volume.Age < minAge {
+			// skip recently created volumes that may not have been attached yet
+			fmt.Printf("skipped (too new)\n")
+		} else {
+			if flagMock {
+				fmt.Printf("Mock deleted!\n")
+			} else {
+				deleteVolume(ctx, volume)
+			}
+		}
+	}
+}
+
+func deleteVolume(ctx context.Context, volume core.Volume) {
+	executor := ctx.Value("executor").(core.ExecutorInterface)
+	err := executor.VolumeDelete(ctx, volume)
+	if err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+	} else {
+		fmt.Printf("Deleted!\n")
+	}
+}
+
+func printVolume(volume core.Volume) {
+	ageString := fmt.Sprintf("%.2f days old", volume.Age)
+	prettyPrint(fmt.Sprintf("[%s] [%s] [%s] ▶ ", ageString, volume.Region, volume.Name), flagMock)
 }
 
 func deleteSshKeys(ctx context.Context, sshKeys []core.SshKey) {
