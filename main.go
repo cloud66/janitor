@@ -303,11 +303,7 @@ func printServer(server core.Server, state string) {
 
 func printLoadBalancer(loadBalancer core.LoadBalancer, state string) {
 	ageString := fmt.Sprintf("%.2f days old", loadBalancer.Age)
-	if loadBalancer.InstanceCount < 999 {
-		prettyPrint(fmt.Sprintf("[%s] [%s] [%s] [%s] [%3d instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.InstanceCount, loadBalancer.Name), flagMock)
-	} else {
-		prettyPrint(fmt.Sprintf("[%s] [%s] [%s] [%s] [n/a instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.Name), flagMock)
-	}
+	prettyPrint(fmt.Sprintf("[%s] [%s] [%s] [%s] [%3d instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.InstanceCount, loadBalancer.Name), flagMock)
 }
 
 func deleteLoadBalancer(ctx context.Context, loadBalancer core.LoadBalancer) {
