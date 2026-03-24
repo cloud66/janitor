@@ -1,6 +1,6 @@
 package core
 
-//Volume represents a block storage volume
+// Volume represents a block storage volume
 type Volume struct {
 	VendorID string
 	Name     string
@@ -10,7 +10,7 @@ type Volume struct {
 	Tags     []string // normalized as "key=value" strings across all clouds
 }
 
-//VolumeSorter sorts volumes by age (oldest first)
+// VolumeSorter sorts volumes by age (oldest first)
 type VolumeSorter []Volume
 
 func (s VolumeSorter) Len() int           { return len(s) }

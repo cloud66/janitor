@@ -1,6 +1,6 @@
 package core
 
-//Server main server model
+// Server main server model
 type Server struct {
 	VendorID string
 	Name     string
@@ -10,7 +10,7 @@ type Server struct {
 	State    string // "RUNNING|TERMINATED"
 }
 
-//ServerSorter sorts servers by age.
+// ServerSorter sorts servers by age.
 type ServerSorter []Server
 
 func (s ServerSorter) Len() int           { return len(s) }

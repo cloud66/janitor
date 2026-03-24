@@ -1,6 +1,6 @@
 package core
 
-//LoadBalancer main server model
+// LoadBalancer main server model
 type LoadBalancer struct {
 	Name            string
 	Age             float64
@@ -13,7 +13,7 @@ type LoadBalancer struct {
 	ListenerArns    []string
 }
 
-//LoadBalancerSorter sorts load balancers by name
+// LoadBalancerSorter sorts load balancers by name
 type LoadBalancerSorter []LoadBalancer
 
 func (s LoadBalancerSorter) Len() int           { return len(s) }

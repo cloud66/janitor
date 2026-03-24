@@ -276,16 +276,15 @@ func deleteLoadBalancers(ctx context.Context, loadBalancers []core.LoadBalancer)
 		if isPermanent(loadBalancer.Name, loadBalancer.Tags) {
 			printLoadBalancer(loadBalancer, "PERM")
 			fmt.Printf("skipped (permanent)\n")
-		} else if loadBalancer.InstanceCount > 0 && loadBalancer.InstanceCount < 999 {
+		} else if loadBalancer.InstanceCount > 0 {
 			// skip LBs that still have servers attached
-			// (999 means instance count is unknown, e.g. AWS ALBs — don't skip those)
 			printLoadBalancer(loadBalancer, "LIVE")
 			fmt.Printf("skipped (has %d instances)\n", loadBalancer.InstanceCount)
 		} else if loadBalancer.Age < minAge {
 			// skip recently created LBs that may not have instances yet
 			printLoadBalancer(loadBalancer, " NEW")
 			fmt.Printf("skipped (less than 1 hour old)\n")
-		} else if loadBalancer.InstanceCount == 0 {
+		} else {
 			// no instances and older than 1 hour — delete it
 			printLoadBalancer(loadBalancer, "DEAD")
 			if flagMock {
@@ -293,10 +292,6 @@ func deleteLoadBalancers(ctx context.Context, loadBalancers []core.LoadBalancer)
 			} else {
 				deleteLoadBalancer(ctx, loadBalancer)
 			}
-		} else {
-			// instance count unknown (999) and older than 1 hour — skip, can't confirm empty
-			printLoadBalancer(loadBalancer, " N/A")
-			fmt.Printf("skipped (instance count unknown)\n")
 		}
 	}
 }

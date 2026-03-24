@@ -2,7 +2,7 @@ package core
 
 import "golang.org/x/net/context"
 
-//ExecutorInterface base for cloud actions
+// ExecutorInterface base for cloud actions
 type ExecutorInterface interface {
 	ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]Server, error)
 	ServerDelete(ctx context.Context, server Server) error

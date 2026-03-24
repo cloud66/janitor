@@ -6,55 +6,55 @@ import (
 	"golang.org/x/net/context"
 )
 
-//Executor base for cloud actions
+// Executor base for cloud actions
 type Executor struct{}
 
-//ServersGet gets servers
+// ServersGet gets servers
 func (e *Executor) ServersGet(context context.Context, vendorIDs []string, regions []string) ([]Server, error) {
 	return nil, errors.New("action not available")
 }
 
-//ServerDelete deletes a server
+// ServerDelete deletes a server
 func (e *Executor) ServerDelete(ctx context.Context, server Server) error {
 	return errors.New("action not available")
 }
 
-//ServerStop stops a server
+// ServerStop stops a server
 func (e *Executor) ServerStop(ctx context.Context, server Server) error {
 	return errors.New("action not available")
 }
 
-//ServerStart starts a server
+// ServerStart starts a server
 func (e *Executor) ServerStart(ctx context.Context, server Server) error {
 	return errors.New("action not available")
 }
 
-//LoadBalancersGet gets load balancers
+// LoadBalancersGet gets load balancers
 func (e *Executor) LoadBalancersGet(ctx context.Context, flagMock bool) ([]LoadBalancer, error) {
 	return nil, errors.New("action not available")
 }
 
-//LoadBalancerDelete deletes a load balancer
+// LoadBalancerDelete deletes a load balancer
 func (e *Executor) LoadBalancerDelete(ctx context.Context, loadBalancer LoadBalancer) error {
 	return errors.New("action not available")
 }
 
-//SshKeysGet gets SSH keys
+// SshKeysGet gets SSH keys
 func (e *Executor) SshKeysGet(ctx context.Context) ([]SshKey, error) {
 	return nil, errors.New("action not available")
 }
 
-//SshKeyDelete deletes an SSH key
+// SshKeyDelete deletes an SSH key
 func (e *Executor) SshKeyDelete(ctx context.Context, sshKey SshKey) error {
 	return errors.New("action not available")
 }
 
-//VolumesGet gets volumes
+// VolumesGet gets volumes
 func (e *Executor) VolumesGet(ctx context.Context) ([]Volume, error) {
 	return nil, errors.New("action not available")
 }
 
-//VolumeDelete deletes a volume
+// VolumeDelete deletes a volume
 func (e *Executor) VolumeDelete(ctx context.Context, volume Volume) error {
 	return errors.New("action not available")
 }

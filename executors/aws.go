@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -13,7 +15,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elasticloadbalancingv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 	"github.com/cloud66/janitor/core"
-	"time"
 )
 
 // Aws encapsulates all AWS cloud calls
@@ -142,7 +143,22 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					}
 				}
 
-				instanceCount := 999
+				// count unique instances across all target groups
+				seenInstances := make(map[string]bool)
+				for _, tgArn := range targetGroupArns {
+					tgArnCopy := tgArn
+					healthOutput, err := albClient.DescribeTargetHealth(ctx, &elasticloadbalancingv2.DescribeTargetHealthInput{
+						TargetGroupArn: &tgArnCopy,
+					})
+					if err == nil {
+						for _, thd := range healthOutput.TargetHealthDescriptions {
+							if thd.Target != nil && thd.Target.Id != nil {
+								seenInstances[*thd.Target.Id] = true
+							}
+						}
+					}
+				}
+				instanceCount := len(seenInstances)
 				results = append(results, core.LoadBalancer{
 					Name:            *name,
 					Age:             age,

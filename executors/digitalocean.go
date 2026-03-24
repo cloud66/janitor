@@ -10,17 +10,17 @@ import (
 	"golang.org/x/oauth2"
 )
 
-//TokenSource provides token transport for auth
+// TokenSource provides token transport for auth
 type TokenSource struct {
 	AccessToken string
 }
 
-//DigitalOcean encapsulates all DO cloud calls
+// DigitalOcean encapsulates all DO cloud calls
 type DigitalOcean struct {
 	*core.Executor
 }
 
-//ServersGet returns collection of Server objects
+// ServersGet returns collection of Server objects
 func (d DigitalOcean) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
 	droplets, _, err := d.client(ctx).Droplets.List(ctx, &godo.ListOptions{})
 	if err != nil {
@@ -43,7 +43,7 @@ func (d DigitalOcean) ServersGet(ctx context.Context, vendorIDs []string, region
 	return result, nil
 }
 
-//ServerDelete remove the specified server
+// ServerDelete remove the specified server
 func (d DigitalOcean) ServerDelete(ctx context.Context, server core.Server) error {
 	id, _ := strconv.Atoi(server.VendorID)
 	_, err := d.client(ctx).Droplets.Delete(ctx, id)
@@ -53,7 +53,7 @@ func (d DigitalOcean) ServerDelete(ctx context.Context, server core.Server) erro
 	return nil
 }
 
-//SshKeysGet gets SSH keys
+// SshKeysGet gets SSH keys
 func (d DigitalOcean) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
 	doAllSshKeys := []godo.Key{}
 	opt := &godo.ListOptions{}
@@ -88,7 +88,7 @@ func (d DigitalOcean) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
 	return result, nil
 }
 
-//SshKeyDelete deletes an SSH key
+// SshKeyDelete deletes an SSH key
 func (d DigitalOcean) SshKeyDelete(ctx context.Context, sshKey core.SshKey) error {
 	id, _ := strconv.Atoi(sshKey.VendorID)
 	_, err := d.client(ctx).Keys.DeleteByID(ctx, id)
@@ -98,7 +98,7 @@ func (d DigitalOcean) SshKeyDelete(ctx context.Context, sshKey core.SshKey) erro
 	return nil
 }
 
-//VolumesGet returns unattached volumes
+// VolumesGet returns unattached volumes
 func (d DigitalOcean) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 	// collect all volumes with pagination
 	allVolumes := []godo.Volume{}
@@ -141,13 +141,13 @@ func (d DigitalOcean) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 	return result, nil
 }
 
-//VolumeDelete removes the specified volume
+// VolumeDelete removes the specified volume
 func (d DigitalOcean) VolumeDelete(ctx context.Context, volume core.Volume) error {
 	_, err := d.client(ctx).Storage.DeleteVolume(ctx, volume.VendorID)
 	return err
 }
 
-//Token retrieves the oauth token
+// Token retrieves the oauth token
 func (t *TokenSource) Token() (*oauth2.Token, error) {
 	token := &oauth2.Token{
 		AccessToken: t.AccessToken,
