@@ -39,6 +39,7 @@ var (
 	flagDOPat              string
 	flagAWSAccessKeyID     string
 	flagAWSSecretAccessKey string
+	flagVultrAPIKey        string
 )
 
 func prettyPrint(message string, mock bool) {
@@ -60,6 +61,7 @@ func main() {
 	flag.StringVar(&flagDOPat, "do-pat", os.Getenv("JANITOR_DO_PAT"), "DigitalOcean Personal Access Token")
 	flag.StringVar(&flagAWSAccessKeyID, "aws-access-key-id", os.Getenv("JANITOR_AWS_ACCESS_KEY_ID"), "AWS Access Key ID")
 	flag.StringVar(&flagAWSSecretAccessKey, "aws-secret-access-key", os.Getenv("JANITOR_AWS_SECRET_ACCESS_KEY"), "AWS Secret Access Key")
+	flag.StringVar(&flagVultrAPIKey, "vultr-api-key", os.Getenv("JANITOR_VULTR_API_KEY"), "Vultr API Key")
 	//config
 	flag.BoolVar(&flagMock, "mock", strings.ToLower(os.Getenv("MOCK")) != "false", "Don't actually delete anything, just show what *would* happen")
 	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
@@ -107,17 +109,17 @@ func main() {
 	//Just add new clouds here
 	clouds["digitalocean"] = executors.DigitalOcean{}
 	clouds["aws"] = executors.Aws{}
+	clouds["vultr"] = executors.Vultr{}
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "JANITOR_DO_PAT", flagDOPat)
 	ctx = context.WithValue(ctx, "JANITOR_AWS_ACCESS_KEY_ID", flagAWSAccessKeyID)
 	ctx = context.WithValue(ctx, "JANITOR_AWS_SECRET_ACCESS_KEY", flagAWSSecretAccessKey)
+	ctx = context.WithValue(ctx, "JANITOR_VULTR_API_KEY", flagVultrAPIKey)
 
-	var longRegex, permRegex *regexp.Regexp
+	var longRegex *regexp.Regexp
 	// anything containing long is LONG
 	longRegex, _ = regexp.Compile(`(?i)long`)
-	// anything containing permanent is PERMANENT
-	permRegex, _ = regexp.Compile(`(?i)permanent`)
 
 	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
@@ -150,7 +152,7 @@ func main() {
 			prettyPrint(fmt.Sprintf("[%d SERVERS]\n", len(servers)), flagMock)
 			sort.Sort(core.ServerSorter(servers))
 			if flagAction == actionDelete {
-				deleteServers(ctx, longRegex, permRegex, servers)
+				deleteServers(ctx, userCloud, longRegex, servers)
 			}
 		}
 
@@ -163,7 +165,7 @@ func main() {
 			} else {
 				prettyPrint(fmt.Sprintf("[%d LOAD BALANCERS]\n", len(loadBalancers)), flagMock)
 				sort.Sort(core.LoadBalancerSorter(loadBalancers))
-				deleteLoadBalancers(ctx, longRegex, permRegex, loadBalancers)
+				deleteLoadBalancers(ctx, loadBalancers)
 			}
 		}
 
@@ -187,7 +189,7 @@ func main() {
 					fmt.Printf("Cannot get volumes due to %s\n", err.Error())
 				}
 			} else {
-				prettyPrint(fmt.Sprintf("[%d UNATTACHED VOLUMES]\n", len(volumes)), flagMock)
+				prettyPrint(fmt.Sprintf("[%d VOLUMES]\n", len(volumes)), flagMock)
 				sort.Sort(core.VolumeSorter(volumes))
 				deleteVolumes(ctx, volumes)
 			}
@@ -195,9 +197,39 @@ func main() {
 	}
 }
 
-func deleteServers(ctx context.Context, longRegex *regexp.Regexp, permRegex *regexp.Regexp, servers []core.Server) {
+// isPermanent checks if a resource name or any of its tags contain "permanent" (case-insensitive)
+func isPermanent(name string, tags []string) bool {
+	if strings.Contains(strings.ToLower(name), "permanent") {
+		return true
+	}
+	for _, tag := range tags {
+		if strings.Contains(strings.ToLower(tag), "permanent") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSampleTag checks if any tag has key C66-STACK with a value containing "sample"
+// vultr tags are flat strings in key=value format (e.g. "C66-STACK=maestro-sample-prd")
+func hasSampleTag(tags []string) bool {
+	for _, tag := range tags {
+		lower := strings.ToLower(tag)
+		// check for C66-STACK= prefix and "sample" in the value
+		if strings.HasPrefix(lower, "c66-stack=") && strings.Contains(lower, "sample") {
+			return true
+		}
+	}
+	return false
+}
+
+func deleteServers(ctx context.Context, cloud string, longRegex *regexp.Regexp, servers []core.Server) {
 	for _, server := range servers {
-		if permRegex.MatchString(server.Name) {
+		if cloud == "vultr" && hasSampleTag(server.Tags) {
+			// skip vultr servers with a C66-STACK tag containing "sample"
+			printServer(server, "SMPL")
+			fmt.Printf("skipped (sample tag)\n")
+		} else if isPermanent(server.Name, server.Tags) {
 			printServer(server, "PERM")
 			fmt.Printf("skipped (permanent)\n")
 		} else if longRegex.MatchString(server.Name) {
@@ -236,43 +268,35 @@ func deleteServer(ctx context.Context, server core.Server) {
 	}
 }
 
-func deleteLoadBalancers(ctx context.Context, longRegex *regexp.Regexp, permRegex *regexp.Regexp, loadBalancers []core.LoadBalancer) {
+func deleteLoadBalancers(ctx context.Context, loadBalancers []core.LoadBalancer) {
+	// minimum age threshold: 1 hour (in days)
+	minAge := 1.0 / 24.0
+
 	for _, loadBalancer := range loadBalancers {
-		if permRegex.MatchString(loadBalancer.Name) {
+		if isPermanent(loadBalancer.Name, loadBalancer.Tags) {
 			printLoadBalancer(loadBalancer, "PERM")
 			fmt.Printf("skipped (permanent)\n")
-		} else if loadBalancer.Age < 0.02 {
+		} else if loadBalancer.InstanceCount > 0 && loadBalancer.InstanceCount < 999 {
+			// skip LBs that still have servers attached
+			// (999 means instance count is unknown, e.g. AWS ALBs — don't skip those)
+			printLoadBalancer(loadBalancer, "LIVE")
+			fmt.Printf("skipped (has %d instances)\n", loadBalancer.InstanceCount)
+		} else if loadBalancer.Age < minAge {
+			// skip recently created LBs that may not have instances yet
 			printLoadBalancer(loadBalancer, " NEW")
-			fmt.Printf("skipped (new)\n")
+			fmt.Printf("skipped (less than 1 hour old)\n")
 		} else if loadBalancer.InstanceCount == 0 {
+			// no instances and older than 1 hour — delete it
 			printLoadBalancer(loadBalancer, "DEAD")
 			if flagMock {
 				fmt.Printf("Mock deleted!\n")
 			} else {
 				deleteLoadBalancer(ctx, loadBalancer)
 			}
-		} else if longRegex.MatchString(loadBalancer.Name) {
-			printLoadBalancer(loadBalancer, "LONG")
-			if loadBalancer.Age > flagMaxAgeLong {
-				if flagMock {
-					fmt.Printf("Mock deleted!\n")
-				} else {
-					deleteLoadBalancer(ctx, loadBalancer)
-				}
-			} else {
-				fmt.Printf("skipped (age)\n")
-			}
 		} else {
-			printLoadBalancer(loadBalancer, "NORM")
-			if loadBalancer.Age > flagMaxAgeNormal {
-				if flagMock {
-					fmt.Printf("Mock deleted!\n")
-				} else {
-					deleteLoadBalancer(ctx, loadBalancer)
-				}
-			} else {
-				fmt.Printf("skipped (age)\n")
-			}
+			// instance count unknown (999) and older than 1 hour — skip, can't confirm empty
+			printLoadBalancer(loadBalancer, " N/A")
+			fmt.Printf("skipped (instance count unknown)\n")
 		}
 	}
 }
@@ -317,7 +341,12 @@ func deleteVolumes(ctx context.Context, volumes []core.Volume) {
 
 	for _, volume := range volumes {
 		printVolume(volume)
-		if volume.Age < minAge {
+		if isPermanent(volume.Name, volume.Tags) {
+			fmt.Printf("skipped (permanent)\n")
+		} else if volume.Attached {
+			// skip volumes that are attached to an instance
+			fmt.Printf("skipped (attached to instance)\n")
+		} else if volume.Age < minAge {
 			// skip recently created volumes that may not have been attached yet
 			fmt.Printf("skipped (too new)\n")
 		} else {

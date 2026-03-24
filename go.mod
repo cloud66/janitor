@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing v1.33.21
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.54.8
 	github.com/digitalocean/godo v1.177.0
+	github.com/vultr/govultr/v3 v3.28.1
 	golang.org/x/net v0.52.0
 	golang.org/x/oauth2 v0.36.0
 )

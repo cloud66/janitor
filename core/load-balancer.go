@@ -7,6 +7,7 @@ type LoadBalancer struct {
 	InstanceCount   int
 	Region          string
 	Type            string
+	Tags            []string // normalized as "key=value" strings across all clouds
 	LoadBalancerArn string
 	TargetGroupArns []string
 	ListenerArns    []string

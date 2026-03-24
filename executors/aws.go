@@ -68,7 +68,9 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 
 				if instance.State.Name != "terminated" && instance.State.Name != "shutting-down" {
 					state := "RUNNING"
-					results = append(results, core.Server{VendorID: vendorID, Name: name, Age: age, Region: region, State: state})
+					// normalize AWS key-value tags to "key=value" strings
+					tags := awsTagsToStrings(instance.Tags)
+					results = append(results, core.Server{VendorID: vendorID, Name: name, Age: age, Region: region, State: state, Tags: tags})
 				}
 			}
 		}
@@ -111,9 +113,12 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 				name := loadBalancer.LoadBalancerName
 				loadBalancerArn := loadBalancer.LoadBalancerArn
 
+				var lbTags []string
 				tagsOutput, err := albClient.DescribeTags(ctx, &elasticloadbalancingv2.DescribeTagsInput{ResourceArns: []string{*loadBalancerArn}})
 				if err == nil {
 					for _, tagDescription := range tagsOutput.TagDescriptions {
+						// normalize all ALB tags to "key=value" strings
+						lbTags = awsAlbTagsToStrings(tagDescription.Tags)
 						for _, tag := range tagDescription.Tags {
 							if *tag.Key == "C66-STACK" {
 								name = tag.Value
@@ -144,6 +149,7 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					InstanceCount:   instanceCount,
 					Region:          region,
 					Type:            "alb",
+					Tags:            lbTags,
 					LoadBalancerArn: *loadBalancerArn,
 					ListenerArns:    listenerArns,
 					TargetGroupArns: targetGroupArns,
@@ -333,6 +339,28 @@ func (a Aws) allRegions() []string {
 		"us-west-1",
 		"us-west-2",
 	}
+}
+
+// awsTagsToStrings normalizes AWS key-value tags to "key=value" strings
+func awsTagsToStrings(tags []ec2types.Tag) []string {
+	result := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if tag.Key != nil && tag.Value != nil {
+			result = append(result, fmt.Sprintf("%s=%s", *tag.Key, *tag.Value))
+		}
+	}
+	return result
+}
+
+// awsAlbTagsToStrings normalizes ALBv2 key-value tags to "key=value" strings
+func awsAlbTagsToStrings(tags []elasticloadbalancingv2types.Tag) []string {
+	result := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if tag.Key != nil && tag.Value != nil {
+			result = append(result, fmt.Sprintf("%s=%s", *tag.Key, *tag.Value))
+		}
+	}
+	return result
 }
 
 func prettyPrint(message string, mock bool) {

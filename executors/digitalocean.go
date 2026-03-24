@@ -36,7 +36,7 @@ func (d DigitalOcean) ServersGet(ctx context.Context, vendorIDs []string, region
 				return nil, err
 			}
 			age := time.Now().Sub(createdAtDate).Hours() / 24.0
-			result = append(result, core.Server{VendorID: strconv.Itoa(droplet.ID), Name: droplet.Name, Age: age, Region: "Global", State: "RUNNING"})
+			result = append(result, core.Server{VendorID: strconv.Itoa(droplet.ID), Name: droplet.Name, Age: age, Region: "Global", State: "RUNNING", Tags: droplet.Tags})
 		}
 	}
 
@@ -124,20 +124,17 @@ func (d DigitalOcean) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 		opt.ListOptions = &godo.ListOptions{Page: page + 1}
 	}
 
-	// filter to only unattached volumes and map to core.Volume
+	// map all volumes to core.Volume with attachment status
 	result := make([]core.Volume, 0, len(allVolumes))
 	for _, vol := range allVolumes {
-		// skip volumes that are attached to a droplet
-		if len(vol.DropletIDs) > 0 {
-			continue
-		}
-
 		age := time.Now().Sub(vol.CreatedAt).Hours() / 24.0
 		result = append(result, core.Volume{
 			VendorID: vol.ID,
 			Name:     vol.Name,
 			Age:      age,
 			Region:   vol.Region.Slug,
+			Attached: len(vol.DropletIDs) > 0,
+			Tags:     vol.Tags,
 		})
 	}
 

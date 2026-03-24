@@ -6,6 +6,8 @@ type Volume struct {
 	Name     string
 	Age      float64 // age in days
 	Region   string
+	Attached bool     // true if volume is attached to an instance
+	Tags     []string // normalized as "key=value" strings across all clouds
 }
 
 //VolumeSorter sorts volumes by age (oldest first)
