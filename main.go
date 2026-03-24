@@ -388,7 +388,7 @@ func deleteSshKeys(ctx context.Context, sshKeys []core.SshKey) {
 					deleteSshKey(ctx, sshKey)
 				}
 			} else {
-				fmt.Printf(fmt.Sprintf("skipped (keep last %d)\n", flagSshKeysKeepCount))
+				fmt.Printf("skipped (keep last %d)\n", flagSshKeysKeepCount)
 			}
 		} else {
 			fmt.Printf("skipped (name)\n")
