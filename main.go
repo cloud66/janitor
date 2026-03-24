@@ -159,7 +159,7 @@ func main() {
 		if flagAction == actionDelete {
 			loadBalancers, err := executor.LoadBalancersGet(ctx, flagMock)
 			if err != nil {
-				if err.Error() != "Action not available" {
+				if err.Error() != "action not available" {
 					fmt.Printf("Cannot get load balancers due to %s\n", err.Error())
 				}
 			} else {
@@ -172,7 +172,7 @@ func main() {
 		if flagAction == actionDelete {
 			sshKeys, err := executor.SshKeysGet(ctx)
 			if err != nil {
-				if err.Error() != "Action not available" {
+				if err.Error() != "action not available" {
 					fmt.Printf("Cannot get SSH keys due to %s\n", err.Error())
 				}
 			} else {
@@ -276,6 +276,10 @@ func deleteLoadBalancers(ctx context.Context, loadBalancers []core.LoadBalancer)
 		if isPermanent(loadBalancer.Name, loadBalancer.Tags) {
 			printLoadBalancer(loadBalancer, "PERM")
 			fmt.Printf("skipped (permanent)\n")
+		} else if loadBalancer.InstanceCount < 0 {
+			// instance count unknown (health check failed) — skip to be safe
+			printLoadBalancer(loadBalancer, " N/A")
+			fmt.Printf("skipped (instance count unknown)\n")
 		} else if loadBalancer.InstanceCount > 0 {
 			// skip LBs that still have servers attached
 			printLoadBalancer(loadBalancer, "LIVE")

@@ -218,6 +218,17 @@ func TestDeleteLoadBalancers_NewSkipped(t *testing.T) {
 	deleteLoadBalancers(nil, lbs)
 }
 
+func TestDeleteLoadBalancers_UnknownInstanceCountSkipped(t *testing.T) {
+	flagMock = true
+
+	lbs := []core.LoadBalancer{
+		// instanceCount -1 means health check failed — should be skipped
+		{Name: "mystery-lb", Age: 2.0, InstanceCount: -1, Region: "us", Type: "alb"},
+	}
+	// should be skipped because instance count is unknown
+	deleteLoadBalancers(nil, lbs)
+}
+
 func TestDeleteLoadBalancers_DeadDeletedInMock(t *testing.T) {
 	flagMock = true
 

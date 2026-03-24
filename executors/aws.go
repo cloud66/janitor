@@ -144,21 +144,29 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 				}
 
 				// count unique instances across all target groups
+				// if any health check fails, assume instances exist to prevent accidental deletion
 				seenInstances := make(map[string]bool)
+				healthCheckFailed := false
 				for _, tgArn := range targetGroupArns {
 					tgArnCopy := tgArn
 					healthOutput, err := albClient.DescribeTargetHealth(ctx, &elasticloadbalancingv2.DescribeTargetHealthInput{
 						TargetGroupArn: &tgArnCopy,
 					})
-					if err == nil {
-						for _, thd := range healthOutput.TargetHealthDescriptions {
-							if thd.Target != nil && thd.Target.Id != nil {
-								seenInstances[*thd.Target.Id] = true
-							}
+					if err != nil {
+						healthCheckFailed = true
+						break
+					}
+					for _, thd := range healthOutput.TargetHealthDescriptions {
+						if thd.Target != nil && thd.Target.Id != nil {
+							seenInstances[*thd.Target.Id] = true
 						}
 					}
 				}
 				instanceCount := len(seenInstances)
+				if healthCheckFailed {
+					// treat unknown as "has instances" so we don't delete an LB we can't verify
+					instanceCount = -1
+				}
 				results = append(results, core.LoadBalancer{
 					Name:            *name,
 					Age:             age,
