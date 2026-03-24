@@ -1,7 +1,6 @@
 package main
 
 import (
-	"regexp"
 	"testing"
 
 	"github.com/cloud66/janitor/core"
@@ -130,8 +129,6 @@ func TestDeleteServers_Classification(t *testing.T) {
 	flagMaxAgeLong = 5.0
 	flagMaxAgeNormal = 0.38
 
-	longRegex, _ := regexp.Compile(`(?i)long`)
-
 	tests := []struct {
 		desc           string
 		cloud          string
@@ -180,7 +177,7 @@ func TestDeleteServers_Classification(t *testing.T) {
 		t.Run(tt.desc, func(t *testing.T) {
 			// we just verify no panic — the classification is tested via isPermanent/hasSampleTag above
 			// and mock mode prevents actual deletions
-			deleteServers(nil, tt.cloud, longRegex, []core.Server{tt.server})
+			deleteServers(nil, tt.cloud, []core.Server{tt.server})
 		})
 	}
 }

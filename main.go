@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -117,10 +116,6 @@ func main() {
 	ctx = context.WithValue(ctx, "JANITOR_AWS_SECRET_ACCESS_KEY", flagAWSSecretAccessKey)
 	ctx = context.WithValue(ctx, "JANITOR_VULTR_API_KEY", flagVultrAPIKey)
 
-	var longRegex *regexp.Regexp
-	// anything containing long is LONG
-	longRegex, _ = regexp.Compile(`(?i)long`)
-
 	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
 		prettyPrint(fmt.Sprintf("NORMAL ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeNormal, flagMaxAgeNormal*24.0), flagMock)
@@ -152,7 +147,7 @@ func main() {
 			prettyPrint(fmt.Sprintf("[%d SERVERS]\n", len(servers)), flagMock)
 			sort.Sort(core.ServerSorter(servers))
 			if flagAction == actionDelete {
-				deleteServers(ctx, userCloud, longRegex, servers)
+				deleteServers(ctx, userCloud, servers)
 			}
 		}
 
@@ -210,6 +205,19 @@ func isPermanent(name string, tags []string) bool {
 	return false
 }
 
+// hasLongName checks if a resource name or any of its tags contain "long" (case-insensitive)
+func hasLongName(name string, tags []string) bool {
+	if strings.Contains(strings.ToLower(name), "long") {
+		return true
+	}
+	for _, tag := range tags {
+		if strings.Contains(strings.ToLower(tag), "long") {
+			return true
+		}
+	}
+	return false
+}
+
 // hasSampleTag checks if any tag has key C66-STACK with a value containing "sample"
 // vultr tags are flat strings in key=value format (e.g. "C66-STACK=maestro-sample-prd")
 func hasSampleTag(tags []string) bool {
@@ -223,7 +231,7 @@ func hasSampleTag(tags []string) bool {
 	return false
 }
 
-func deleteServers(ctx context.Context, cloud string, longRegex *regexp.Regexp, servers []core.Server) {
+func deleteServers(ctx context.Context, cloud string, servers []core.Server) {
 	for _, server := range servers {
 		if cloud == "vultr" && hasSampleTag(server.Tags) {
 			// skip vultr servers with a C66-STACK tag containing "sample"
@@ -232,7 +240,7 @@ func deleteServers(ctx context.Context, cloud string, longRegex *regexp.Regexp, 
 		} else if isPermanent(server.Name, server.Tags) {
 			printServer(server, "PERM")
 			fmt.Printf("skipped (permanent)\n")
-		} else if longRegex.MatchString(server.Name) {
+		} else if hasLongName(server.Name, server.Tags) {
 			printServer(server, "LONG")
 			if server.Age > flagMaxAgeLong {
 				if flagMock {
