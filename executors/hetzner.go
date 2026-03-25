@@ -89,8 +89,13 @@ func (h Hetzner) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.Lo
 					instanceCount++
 				}
 			case hcloud.LoadBalancerTargetTypeLabelSelector:
-				// label selectors resolve to sub-targets at runtime
-				instanceCount += len(target.Targets)
+				// label selectors may temporarily resolve to 0 servers (autoscaling, deployments)
+				// count at least 1 since the selector's existence means the LB is configured for traffic
+				if len(target.Targets) > 0 {
+					instanceCount += len(target.Targets)
+				} else {
+					instanceCount++
+				}
 			case hcloud.LoadBalancerTargetTypeIP:
 				instanceCount++
 			}
