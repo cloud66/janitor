@@ -170,7 +170,7 @@ func (v Vultr) VolumeDelete(ctx context.Context, volume core.Volume) error {
 
 // client creates an authenticated Vultr API client
 func (v *Vultr) client(ctx context.Context) *govultr.Client {
-	apiKey := ctx.Value("JANITOR_VULTR_API_KEY").(string)
+	apiKey := ctx.Value("JANITOR_VULTR_PAT").(string)
 	// reuse the same oauth2 token pattern as DigitalOcean
 	tokenSource := &TokenSource{
 		AccessToken: apiKey,

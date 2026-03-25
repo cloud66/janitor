@@ -38,8 +38,8 @@ var (
 	flagDOPat              string
 	flagAWSAccessKeyID     string
 	flagAWSSecretAccessKey string
-	flagVultrAPIKey        string
-	flagHetznerAPIToken    string
+	flagVultrPat        string
+	flagHetznerPat    string
 )
 
 func prettyPrint(message string, mock bool) {
@@ -61,8 +61,8 @@ func main() {
 	flag.StringVar(&flagDOPat, "do-pat", os.Getenv("JANITOR_DO_PAT"), "DigitalOcean Personal Access Token")
 	flag.StringVar(&flagAWSAccessKeyID, "aws-access-key-id", os.Getenv("JANITOR_AWS_ACCESS_KEY_ID"), "AWS Access Key ID")
 	flag.StringVar(&flagAWSSecretAccessKey, "aws-secret-access-key", os.Getenv("JANITOR_AWS_SECRET_ACCESS_KEY"), "AWS Secret Access Key")
-	flag.StringVar(&flagVultrAPIKey, "vultr-api-key", os.Getenv("JANITOR_VULTR_API_KEY"), "Vultr API Key")
-	flag.StringVar(&flagHetznerAPIToken, "hetzner-api-token", os.Getenv("JANITOR_HETZNER_API_TOKEN"), "Hetzner Cloud API Token")
+	flag.StringVar(&flagVultrPat, "vultr-pat", os.Getenv("JANITOR_VULTR_PAT"), "Vultr Personal Access Token")
+	flag.StringVar(&flagHetznerPat, "hetzner-pat", os.Getenv("JANITOR_HETZNER_PAT"), "Hetzner Personal Access Token")
 	//config
 	flag.BoolVar(&flagMock, "mock", strings.ToLower(os.Getenv("MOCK")) != "false", "Don't actually delete anything, just show what *would* happen")
 	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
@@ -117,8 +117,8 @@ func main() {
 	ctx = context.WithValue(ctx, "JANITOR_DO_PAT", flagDOPat)
 	ctx = context.WithValue(ctx, "JANITOR_AWS_ACCESS_KEY_ID", flagAWSAccessKeyID)
 	ctx = context.WithValue(ctx, "JANITOR_AWS_SECRET_ACCESS_KEY", flagAWSSecretAccessKey)
-	ctx = context.WithValue(ctx, "JANITOR_VULTR_API_KEY", flagVultrAPIKey)
-	ctx = context.WithValue(ctx, "JANITOR_HETZNER_API_TOKEN", flagHetznerAPIToken)
+	ctx = context.WithValue(ctx, "JANITOR_VULTR_PAT", flagVultrPat)
+	ctx = context.WithValue(ctx, "JANITOR_HETZNER_PAT", flagHetznerPat)
 
 	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)

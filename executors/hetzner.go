@@ -189,6 +189,6 @@ func hetznerLabelsToTags(labels map[string]string) []string {
 
 // client creates an authenticated Hetzner Cloud API client
 func (h *Hetzner) client(ctx context.Context) *hcloud.Client {
-	apiToken := ctx.Value("JANITOR_HETZNER_API_TOKEN").(string)
+	apiToken := ctx.Value("JANITOR_HETZNER_PAT").(string)
 	return hcloud.NewClient(hcloud.WithToken(apiToken))
 }
