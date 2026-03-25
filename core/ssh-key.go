@@ -5,7 +5,7 @@ type SshKey struct {
 	Name     string
 }
 
-//SshKeyNameSorter sorts SSH keys by Name
+// SshKeyNameSorter sorts SSH keys by Name
 type SshKeySorter []SshKey
 
 func (s SshKeySorter) Len() int           { return len(s) }

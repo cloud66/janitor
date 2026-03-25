@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +38,8 @@ var (
 	flagDOPat              string
 	flagAWSAccessKeyID     string
 	flagAWSSecretAccessKey string
+	flagVultrAPIKey        string
+	flagHetznerAPIToken    string
 )
 
 func prettyPrint(message string, mock bool) {
@@ -60,6 +61,8 @@ func main() {
 	flag.StringVar(&flagDOPat, "do-pat", os.Getenv("JANITOR_DO_PAT"), "DigitalOcean Personal Access Token")
 	flag.StringVar(&flagAWSAccessKeyID, "aws-access-key-id", os.Getenv("JANITOR_AWS_ACCESS_KEY_ID"), "AWS Access Key ID")
 	flag.StringVar(&flagAWSSecretAccessKey, "aws-secret-access-key", os.Getenv("JANITOR_AWS_SECRET_ACCESS_KEY"), "AWS Secret Access Key")
+	flag.StringVar(&flagVultrAPIKey, "vultr-api-key", os.Getenv("JANITOR_VULTR_API_KEY"), "Vultr API Key")
+	flag.StringVar(&flagHetznerAPIToken, "hetzner-api-token", os.Getenv("JANITOR_HETZNER_API_TOKEN"), "Hetzner Cloud API Token")
 	//config
 	flag.BoolVar(&flagMock, "mock", strings.ToLower(os.Getenv("MOCK")) != "false", "Don't actually delete anything, just show what *would* happen")
 	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
@@ -107,17 +110,15 @@ func main() {
 	//Just add new clouds here
 	clouds["digitalocean"] = executors.DigitalOcean{}
 	clouds["aws"] = executors.Aws{}
+	clouds["vultr"] = executors.Vultr{}
+	clouds["hetzner"] = executors.Hetzner{}
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "JANITOR_DO_PAT", flagDOPat)
 	ctx = context.WithValue(ctx, "JANITOR_AWS_ACCESS_KEY_ID", flagAWSAccessKeyID)
 	ctx = context.WithValue(ctx, "JANITOR_AWS_SECRET_ACCESS_KEY", flagAWSSecretAccessKey)
-
-	var longRegex, permRegex *regexp.Regexp
-	// anything containing long is LONG
-	longRegex, _ = regexp.Compile(`(?i)long`)
-	// anything containing permanent is PERMANENT
-	permRegex, _ = regexp.Compile(`(?i)permanent`)
+	ctx = context.WithValue(ctx, "JANITOR_VULTR_API_KEY", flagVultrAPIKey)
+	ctx = context.WithValue(ctx, "JANITOR_HETZNER_API_TOKEN", flagHetznerAPIToken)
 
 	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
@@ -150,27 +151,27 @@ func main() {
 			prettyPrint(fmt.Sprintf("[%d SERVERS]\n", len(servers)), flagMock)
 			sort.Sort(core.ServerSorter(servers))
 			if flagAction == actionDelete {
-				deleteServers(ctx, longRegex, permRegex, servers)
+				deleteServers(ctx, userCloud, servers)
 			}
 		}
 
 		if flagAction == actionDelete {
 			loadBalancers, err := executor.LoadBalancersGet(ctx, flagMock)
 			if err != nil {
-				if err.Error() != "Action not available" {
+				if err.Error() != "action not available" {
 					fmt.Printf("Cannot get load balancers due to %s\n", err.Error())
 				}
 			} else {
 				prettyPrint(fmt.Sprintf("[%d LOAD BALANCERS]\n", len(loadBalancers)), flagMock)
 				sort.Sort(core.LoadBalancerSorter(loadBalancers))
-				deleteLoadBalancers(ctx, longRegex, permRegex, loadBalancers)
+				deleteLoadBalancers(ctx, loadBalancers)
 			}
 		}
 
 		if flagAction == actionDelete {
 			sshKeys, err := executor.SshKeysGet(ctx)
 			if err != nil {
-				if err.Error() != "Action not available" {
+				if err.Error() != "action not available" {
 					fmt.Printf("Cannot get SSH keys due to %s\n", err.Error())
 				}
 			} else {
@@ -187,7 +188,7 @@ func main() {
 					fmt.Printf("Cannot get volumes due to %s\n", err.Error())
 				}
 			} else {
-				prettyPrint(fmt.Sprintf("[%d UNATTACHED VOLUMES]\n", len(volumes)), flagMock)
+				prettyPrint(fmt.Sprintf("[%d VOLUMES]\n", len(volumes)), flagMock)
 				sort.Sort(core.VolumeSorter(volumes))
 				deleteVolumes(ctx, volumes)
 			}
@@ -195,12 +196,55 @@ func main() {
 	}
 }
 
-func deleteServers(ctx context.Context, longRegex *regexp.Regexp, permRegex *regexp.Regexp, servers []core.Server) {
+// isPermanent checks if a resource name or any of its tags contain "permanent" (case-insensitive)
+func isPermanent(name string, tags []string) bool {
+	if strings.Contains(strings.ToLower(name), "permanent") {
+		return true
+	}
+	for _, tag := range tags {
+		if strings.Contains(strings.ToLower(tag), "permanent") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasLongName checks if a resource name or any of its tags contain "long" (case-insensitive)
+func hasLongName(name string, tags []string) bool {
+	if strings.Contains(strings.ToLower(name), "long") {
+		return true
+	}
+	for _, tag := range tags {
+		if strings.Contains(strings.ToLower(tag), "long") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasSampleTag checks if any tag has key C66-STACK with a value containing "sample"
+// vultr tags are flat strings in key=value format (e.g. "C66-STACK=maestro-sample-prd")
+func hasSampleTag(tags []string) bool {
+	for _, tag := range tags {
+		lower := strings.ToLower(tag)
+		// check for C66-STACK= prefix and "sample" in the value
+		if strings.HasPrefix(lower, "c66-stack=") && strings.Contains(lower, "sample") {
+			return true
+		}
+	}
+	return false
+}
+
+func deleteServers(ctx context.Context, cloud string, servers []core.Server) {
 	for _, server := range servers {
-		if permRegex.MatchString(server.Name) {
+		if cloud == "vultr" && hasSampleTag(server.Tags) {
+			// skip vultr servers with a C66-STACK tag containing "sample"
+			printServer(server, "SMPL")
+			fmt.Printf("skipped (sample tag)\n")
+		} else if isPermanent(server.Name, server.Tags) {
 			printServer(server, "PERM")
 			fmt.Printf("skipped (permanent)\n")
-		} else if longRegex.MatchString(server.Name) {
+		} else if hasLongName(server.Name, server.Tags) {
 			printServer(server, "LONG")
 			if server.Age > flagMaxAgeLong {
 				if flagMock {
@@ -236,42 +280,33 @@ func deleteServer(ctx context.Context, server core.Server) {
 	}
 }
 
-func deleteLoadBalancers(ctx context.Context, longRegex *regexp.Regexp, permRegex *regexp.Regexp, loadBalancers []core.LoadBalancer) {
+func deleteLoadBalancers(ctx context.Context, loadBalancers []core.LoadBalancer) {
+	// minimum age threshold: 1 hour (in days)
+	minAge := 1.0 / 24.0
+
 	for _, loadBalancer := range loadBalancers {
-		if permRegex.MatchString(loadBalancer.Name) {
+		if isPermanent(loadBalancer.Name, loadBalancer.Tags) {
 			printLoadBalancer(loadBalancer, "PERM")
 			fmt.Printf("skipped (permanent)\n")
-		} else if loadBalancer.Age < 0.02 {
+		} else if loadBalancer.InstanceCount < 0 {
+			// instance count unknown (health check failed) — skip to be safe
+			printLoadBalancer(loadBalancer, " N/A")
+			fmt.Printf("skipped (instance count unknown)\n")
+		} else if loadBalancer.InstanceCount > 0 {
+			// skip LBs that still have servers attached
+			printLoadBalancer(loadBalancer, "LIVE")
+			fmt.Printf("skipped (has %d instances)\n", loadBalancer.InstanceCount)
+		} else if loadBalancer.Age < minAge {
+			// skip recently created LBs that may not have instances yet
 			printLoadBalancer(loadBalancer, " NEW")
-			fmt.Printf("skipped (new)\n")
-		} else if loadBalancer.InstanceCount == 0 {
+			fmt.Printf("skipped (less than 1 hour old)\n")
+		} else {
+			// no instances and older than 1 hour — delete it
 			printLoadBalancer(loadBalancer, "DEAD")
 			if flagMock {
 				fmt.Printf("Mock deleted!\n")
 			} else {
 				deleteLoadBalancer(ctx, loadBalancer)
-			}
-		} else if longRegex.MatchString(loadBalancer.Name) {
-			printLoadBalancer(loadBalancer, "LONG")
-			if loadBalancer.Age > flagMaxAgeLong {
-				if flagMock {
-					fmt.Printf("Mock deleted!\n")
-				} else {
-					deleteLoadBalancer(ctx, loadBalancer)
-				}
-			} else {
-				fmt.Printf("skipped (age)\n")
-			}
-		} else {
-			printLoadBalancer(loadBalancer, "NORM")
-			if loadBalancer.Age > flagMaxAgeNormal {
-				if flagMock {
-					fmt.Printf("Mock deleted!\n")
-				} else {
-					deleteLoadBalancer(ctx, loadBalancer)
-				}
-			} else {
-				fmt.Printf("skipped (age)\n")
 			}
 		}
 	}
@@ -284,11 +319,7 @@ func printServer(server core.Server, state string) {
 
 func printLoadBalancer(loadBalancer core.LoadBalancer, state string) {
 	ageString := fmt.Sprintf("%.2f days old", loadBalancer.Age)
-	if loadBalancer.InstanceCount < 999 {
-		prettyPrint(fmt.Sprintf("[%s] [%s] [%s] [%s] [%3d instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.InstanceCount, loadBalancer.Name), flagMock)
-	} else {
-		prettyPrint(fmt.Sprintf("[%s] [%s] [%s] [%s] [n/a instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.Name), flagMock)
-	}
+	prettyPrint(fmt.Sprintf("[%s] [%s] [%s] [%s] [%3d instances] [%s] ▶ ", ageString, loadBalancer.Region, state, loadBalancer.Type, loadBalancer.InstanceCount, loadBalancer.Name), flagMock)
 }
 
 func deleteLoadBalancer(ctx context.Context, loadBalancer core.LoadBalancer) {
@@ -317,7 +348,12 @@ func deleteVolumes(ctx context.Context, volumes []core.Volume) {
 
 	for _, volume := range volumes {
 		printVolume(volume)
-		if volume.Age < minAge {
+		if isPermanent(volume.Name, volume.Tags) {
+			fmt.Printf("skipped (permanent)\n")
+		} else if volume.Attached {
+			// skip volumes that are attached to an instance
+			fmt.Printf("skipped (attached to instance)\n")
+		} else if volume.Age < minAge {
 			// skip recently created volumes that may not have been attached yet
 			fmt.Printf("skipped (too new)\n")
 		} else {
@@ -368,7 +404,7 @@ func deleteSshKeys(ctx context.Context, sshKeys []core.SshKey) {
 					deleteSshKey(ctx, sshKey)
 				}
 			} else {
-				fmt.Printf(fmt.Sprintf("skipped (keep last %d)\n", flagSshKeysKeepCount))
+				fmt.Printf("skipped (keep last %d)\n", flagSshKeysKeepCount)
 			}
 		} else {
 			fmt.Printf("skipped (name)\n")

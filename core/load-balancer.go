@@ -1,18 +1,19 @@
 package core
 
-//LoadBalancer main server model
+// LoadBalancer main server model
 type LoadBalancer struct {
 	Name            string
 	Age             float64
 	InstanceCount   int
 	Region          string
 	Type            string
+	Tags            []string // normalized as "key=value" strings across all clouds
 	LoadBalancerArn string
 	TargetGroupArns []string
 	ListenerArns    []string
 }
 
-//LoadBalancerSorter sorts load balancers by name
+// LoadBalancerSorter sorts load balancers by name
 type LoadBalancerSorter []LoadBalancer
 
 func (s LoadBalancerSorter) Len() int           { return len(s) }
