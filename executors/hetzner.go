@@ -34,11 +34,17 @@ func (h Hetzner) ServersGet(ctx context.Context, vendorIDs []string, regions []s
 			state = string(server.Status)
 		}
 
+		// guard against nil Datacenter in case of incomplete API response
+		region := ""
+		if server.Datacenter != nil {
+			region = server.Datacenter.Name
+		}
+
 		result = append(result, core.Server{
 			VendorID: fmt.Sprintf("%d", server.ID),
 			Name:     server.Name,
 			Age:      age,
-			Region:   server.Datacenter.Name,
+			Region:   region,
 			State:    state,
 			Tags:     hetznerLabelsToTags(server.Labels),
 		})
@@ -74,19 +80,33 @@ func (h Hetzner) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.Lo
 	for _, lb := range lbs {
 		age := time.Now().Sub(lb.Created).Hours() / 24.0
 
-		// count unique server targets across all target types
+		// count targets across all target types (server, label-selector, IP)
 		instanceCount := 0
 		for _, target := range lb.Targets {
-			if target.Type == hcloud.LoadBalancerTargetTypeServer && target.Server != nil {
+			switch target.Type {
+			case hcloud.LoadBalancerTargetTypeServer:
+				if target.Server != nil {
+					instanceCount++
+				}
+			case hcloud.LoadBalancerTargetTypeLabelSelector:
+				// label selectors resolve to sub-targets at runtime
+				instanceCount += len(target.Targets)
+			case hcloud.LoadBalancerTargetTypeIP:
 				instanceCount++
 			}
+		}
+
+		// guard against nil Location in case of incomplete API response
+		region := ""
+		if lb.Location != nil {
+			region = lb.Location.Name
 		}
 
 		result = append(result, core.LoadBalancer{
 			Name:            lb.Name,
 			Age:             age,
 			InstanceCount:   instanceCount,
-			Region:          lb.Location.Name,
+			Region:          region,
 			Type:            "hetzner",
 			Tags:            hetznerLabelsToTags(lb.Labels),
 			LoadBalancerArn: fmt.Sprintf("%d", lb.ID), // repurpose ARN field for Hetzner LB ID
@@ -122,11 +142,17 @@ func (h Hetzner) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 	for _, vol := range volumes {
 		age := time.Now().Sub(vol.Created).Hours() / 24.0
 
+		// guard against nil Location in case of incomplete API response
+		region := ""
+		if vol.Location != nil {
+			region = vol.Location.Name
+		}
+
 		result = append(result, core.Volume{
 			VendorID: fmt.Sprintf("%d", vol.ID),
 			Name:     vol.Name,
 			Age:      age,
-			Region:   vol.Location.Name,
+			Region:   region,
 			Attached: vol.Server != nil, // nil means unattached
 			Tags:     hetznerLabelsToTags(vol.Labels),
 		})

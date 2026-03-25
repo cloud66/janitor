@@ -60,6 +60,43 @@ func TestIsPermanent_TagContainsPermanent(t *testing.T) {
 	}
 }
 
+// --- hasLongName tests ---
+
+func TestHasLongName(t *testing.T) {
+	tests := []struct {
+		desc     string
+		name     string
+		tags     []string
+		expected bool
+	}{
+		// match on name
+		{"name contains long", "my-long-running-job", nil, true},
+		{"name contains LONG uppercase", "LONG-server", nil, true},
+		{"name contains Long mixed case", "test-Long-task", nil, true},
+		// no match on name
+		{"name without long", "my-server", nil, false},
+		{"empty name", "", nil, false},
+		// match on tag
+		{"tag value contains long", "my-server", []string{"lifecycle=long-running"}, true},
+		{"tag key contains long", "my-server", []string{"long-lived=true"}, true},
+		// no match on tags
+		{"tag without long", "my-server", []string{"lifecycle=temporary"}, false},
+		{"empty tags", "my-server", []string{}, false},
+		{"nil tags", "my-server", nil, false},
+		// name match overrides tag miss
+		{"long in name, no tag match", "long-box", []string{"env=prod"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			result := hasLongName(tt.name, tt.tags)
+			if result != tt.expected {
+				t.Errorf("hasLongName(%q, %v) = %v, want %v", tt.name, tt.tags, result, tt.expected)
+			}
+		})
+	}
+}
+
 // --- hasSampleTag tests ---
 
 func TestHasSampleTag(t *testing.T) {
