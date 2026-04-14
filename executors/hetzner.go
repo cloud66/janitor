@@ -3,6 +3,7 @@ package executors
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -268,8 +269,15 @@ func hetznerLabelsToTags(labels map[string]string) []string {
 func (h Hetzner) client(ctx context.Context) *hcloud.Client {
 	apiToken, _ := ctx.Value(core.HetznerPatKey).(string)
 	opts := []hcloud.ClientOption{hcloud.WithToken(apiToken)}
+	// test seam: if a base URL override is present, redirect the SDK to it.
+	// hcloud.WithEndpoint doesn't validate, so we pre-parse and warn on
+	// failure rather than silently hitting api.hetzner.cloud.
 	if base, ok := ctx.Value(core.HetznerBaseURLKey).(string); ok && base != "" {
-		opts = append(opts, hcloud.WithEndpoint(base))
+		if _, err := url.Parse(base); err == nil {
+			opts = append(opts, hcloud.WithEndpoint(base))
+		} else {
+			core.Warnf(ctx, "hetzner BaseURL parse(%q) failed: %v", base, err)
+		}
 	}
 	return hcloud.NewClient(opts...)
 }

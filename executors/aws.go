@@ -583,19 +583,15 @@ func (a Aws) albClient(ctx context.Context, region string) *elasticloadbalancing
 	})
 }
 
-var credentialsCache *aws.CredentialsCache
-
+// credentials builds a fresh per-call CredentialsCache from ctx-bound keys.
+// no package-level caching: a singleton would race under parallel tests and
+// leak creds across test runs (reviewer panel H-1). The AWS SDK's
+// CredentialsCache handles signature caching internally per-client, so
+// reconstructing it per call is cheap and correct.
 func (a Aws) credentials(ctx context.Context) *aws.CredentialsCache {
-	if credentialsCache != nil {
-		return credentialsCache
-	}
-	// use typed ctx keys now — the previous string-literal reads tripped go
-	// vet SA1029 and risked collisions with other packages.
 	accessKey, _ := ctx.Value(core.AWSAccessKeyIDKey).(string)
 	secretKey, _ := ctx.Value(core.AWSSecretAccessKeyKey).(string)
-	credentialsProvider := credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")
-	credentialsCache = aws.NewCredentialsCache(credentialsProvider)
-	return credentialsCache
+	return aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""))
 }
 
 func (a Aws) allRegions() []string {

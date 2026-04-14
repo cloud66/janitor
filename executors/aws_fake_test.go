@@ -68,17 +68,31 @@ func (f *fakeEC2) TerminateInstances(ctx context.Context, in *ec2.TerminateInsta
 }
 
 // fakeELB is a record-and-replay classic ELB fake.
+// lbPages drives Marker-based pagination (one output per page); lbs remains
+// as the simple single-page helper when pagination isn't under test.
 type fakeELB struct {
 	log         *callLog
 	describeErr error
 	deleteErr   error
 	lbs         []elbtypes.LoadBalancerDescription
+	lbPages     []*elasticloadbalancing.DescribeLoadBalancersOutput
 }
 
 func (f *fakeELB) DescribeLoadBalancers(ctx context.Context, in *elasticloadbalancing.DescribeLoadBalancersInput, opts ...func(*elasticloadbalancing.Options)) (*elasticloadbalancing.DescribeLoadBalancersOutput, error) {
 	f.log.add("elb.DescribeLoadBalancers")
 	if f.describeErr != nil {
 		return nil, f.describeErr
+	}
+	// if lbPages is populated, dispatch by Marker="pageN"; otherwise single-page.
+	if len(f.lbPages) > 0 {
+		idx := 0
+		if in.Marker != nil {
+			fmt.Sscanf(*in.Marker, "page%d", &idx)
+		}
+		if idx >= len(f.lbPages) {
+			return &elasticloadbalancing.DescribeLoadBalancersOutput{}, nil
+		}
+		return f.lbPages[idx], nil
 	}
 	return &elasticloadbalancing.DescribeLoadBalancersOutput{LoadBalancerDescriptions: f.lbs}, nil
 }
@@ -763,5 +777,63 @@ func TestAws_ALB_PerLBTargetGroupsPagination(t *testing.T) {
 	}
 	if got == nil || len(got.TargetGroupArns) != 3 {
 		t.Fatalf("expected 3 TGs across 2 pages, got %+v", got)
+	}
+}
+
+// --- classic ELB Marker pagination (B8 parity with ALB) --------------------
+
+// TestAws_ELB_Pagination_B8 pins that classic ELB DescribeLoadBalancers is
+// driven by NextMarker just like ALB. Without the fake honoring Marker, a
+// regression in elbMarker handling (never advancing, or failing to terminate
+// on empty-string Marker) would go undetected. Covers both the "NextMarker
+// non-nil → fetch next page" and "NextMarker=='' → terminate" branches.
+func TestAws_ELB_Pagination_B8(t *testing.T) {
+	log := &callLog{}
+	n1, n2, n3 := "lb1", "lb2", "lb3"
+	c := time.Now().Add(-48 * time.Hour)
+	page1Marker := "page1"
+	emptyMarker := "" // explicit empty-string terminator (real AWS sometimes returns this instead of nil)
+	elb := &fakeELB{
+		log: log,
+		lbPages: []*elasticloadbalancing.DescribeLoadBalancersOutput{
+			{
+				LoadBalancerDescriptions: []elbtypes.LoadBalancerDescription{
+					{LoadBalancerName: &n1, CreatedTime: &c},
+					{LoadBalancerName: &n2, CreatedTime: &c},
+				},
+				NextMarker: &page1Marker,
+			},
+			{
+				LoadBalancerDescriptions: []elbtypes.LoadBalancerDescription{
+					{LoadBalancerName: &n3, CreatedTime: &c},
+				},
+				NextMarker: &emptyMarker, // must terminate, not loop
+			},
+		},
+	}
+	a := newTestAws(&fakeEC2{log: log}, elb, newFakeALB(log))
+
+	lbs, err := a.LoadBalancersGet(context.Background(), true)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var elbLBs []core.LoadBalancer
+	for _, lb := range lbs {
+		if lb.Type == "elb" {
+			elbLBs = append(elbLBs, lb)
+		}
+	}
+	if len(elbLBs) != 3 {
+		t.Fatalf("expected 3 classic LBs across 2 pages, got %d: %+v", len(elbLBs), elbLBs)
+	}
+	// assert exactly 2 describe calls — no infinite loop on empty-string marker.
+	describeCount := 0
+	for _, c := range log.calls {
+		if c == "elb.DescribeLoadBalancers" {
+			describeCount++
+		}
+	}
+	if describeCount != 2 {
+		t.Fatalf("expected 2 DescribeLoadBalancers calls (page1 + page2), got %d", describeCount)
 	}
 }

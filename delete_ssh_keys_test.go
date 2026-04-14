@@ -8,11 +8,14 @@ import (
 	"github.com/cloud66/janitor/core"
 )
 
-// fakeExecutor is a minimal core.ExecutorInterface impl used by
-// delete_ssh_keys tests. It records SshKeyDelete calls so boundary assertions
-// can count deletions precisely.
+// fakeExecutor is a minimal core.ExecutorInterface impl used by main-package
+// tests. Records *Delete calls so tests can assert on invocation counts —
+// the reviewer panel flagged stdout-only assertions as too weak (a broken
+// skip that still printed the tag would pass).
 type fakeExecutor struct {
-	deletedKeys []core.SshKey
+	deletedKeys    []core.SshKey
+	deletedLBs     []core.LoadBalancer
+	deletedVolumes []core.Volume
 }
 
 func (f *fakeExecutor) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
@@ -25,7 +28,8 @@ func (f *fakeExecutor) LoadBalancersGet(ctx context.Context, mock bool) ([]core.
 	return nil, core.ErrUnsupported
 }
 func (f *fakeExecutor) LoadBalancerDelete(ctx context.Context, lb core.LoadBalancer) error {
-	return core.ErrUnsupported
+	f.deletedLBs = append(f.deletedLBs, lb)
+	return nil
 }
 func (f *fakeExecutor) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
 	return nil, core.ErrUnsupported
@@ -38,7 +42,8 @@ func (f *fakeExecutor) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 	return nil, core.ErrUnsupported
 }
 func (f *fakeExecutor) VolumeDelete(ctx context.Context, v core.Volume) error {
-	return core.ErrUnsupported
+	f.deletedVolumes = append(f.deletedVolumes, v)
+	return nil
 }
 
 // withSshKeepCount swaps flagSshKeysKeepCount for the test and restores via

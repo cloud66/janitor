@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
@@ -64,13 +65,13 @@ func TestIsPermanent_NameContainsPermanent(t *testing.T) {
 		{"plain name no match", "my-server", nil, false},
 		{"prefix perm not full word", "perm-server", nil, false},
 		{"empty name", "", nil, false},
-		// B4 (won't-fix): isPermanent uses strings.Contains, so names like
-		// "supermanent-name" match by coincidence. Accepted because no known
-		// fleet resource relies on this coincidence and tightening to word-
-		// boundary matching would risk false negatives on hyphen/underscore
-		// variants that real fleets DO use ("is-permanent", "permanent_box").
-		// Pinned so a naive "fix" doesn't silently change isPermanent semantics.
-		{"substring false positive supermanent", "supermanent-name", nil, true},
+		// TODO(B4): known-limitation pin, NOT a behavior contract. isPermanent
+		// uses strings.Contains so "supermanent-name" matches by coincidence.
+		// Closed as won't-fix (see PR #5 panel review) because no real-fleet
+		// resource triggers it and a word-boundary tightening would break
+		// legitimate "is-permanent" / "permanent_box" names. If a future fix
+		// adds word-boundary matching, FLIP this case to `false` — don't delete.
+		{"TODO(B4) substring false positive supermanent", "supermanent-name", nil, true},
 	}
 
 	for _, tt := range tests {
@@ -105,9 +106,10 @@ func TestIsPermanent_TagContainsPermanent(t *testing.T) {
 		{"empty tags no match", "my-server", []string{}, false},
 		// match in name even if tags don't match
 		{"name match overrides tag miss", "permanent-box", []string{"lifecycle=temporary"}, true},
-		// B4 (won't-fix, tag variant): same greedy-substring rationale as above
-		// — tag values containing "permanent" match even when not exact. Pinned.
-		{"tag value permanent-core in C66 key", "my-server", []string{"env=prod", "C66=permanent-core"}, true},
+		// TODO(B4): known-limitation pin, NOT a contract. Tag VALUES containing
+		// "permanent" match by substring. Won't-fix per PR #5 panel review; if a
+		// tightening lands, FLIP this expectation — don't delete the case.
+		{"TODO(B4) tag value permanent-core substring", "my-server", []string{"env=prod", "C66=permanent-core"}, true},
 	}
 
 	for _, tt := range tests {
@@ -148,13 +150,13 @@ func TestHasLongName(t *testing.T) {
 		{"nil tags", "my-server", nil, false},
 		// name match overrides tag miss
 		{"long in name, no tag match", "long-box", []string{"env=prod"}, true},
-		// B4 (won't-fix, hasLongName variant): hasLongName is a substring check
-		// on "long", so "prolonged" and "belonging" match coincidentally. Same
-		// rationale as isPermanent B4 pins: real fleets use "long-running",
-		// "long_lived" etc. and word-boundary tightening would create false
-		// negatives. Pinned to prevent silent semantic drift.
-		{"substring false positive prolonged", "prolonged-task", nil, true},
-		{"substring false positive belonging", "belonging", nil, true},
+		// TODO(B4): known-limitation pins, NOT contracts. "prolonged"/"belonging"
+		// match because hasLongName is a substring check on "long". Won't-fix per
+		// PR #5 panel review — real fleets use "long-running"/"long_lived". If a
+		// future tightening adds word-boundary matching, FLIP these expectations
+		// to `false` rather than deleting them.
+		{"TODO(B4) substring false positive prolonged", "prolonged-task", nil, true},
+		{"TODO(B4) substring false positive belonging", "belonging", nil, true},
 	}
 
 	for _, tt := range tests {
@@ -532,5 +534,99 @@ func TestDeleteVolumes_PermanentByTagSkipped(t *testing.T) {
 	})
 	if !strings.Contains(got, "skipped (permanent)") {
 		t.Errorf("expected output to contain skipped (permanent), got %q", got)
+	}
+}
+
+// --- behavior assertions via fakeExecutor (reviewer panel must-fix #2) ---
+// these tests verify the executor's Delete methods are/aren't INVOKED on
+// each path, not just that the right stdout text appeared. A broken skip
+// that still printed the tag but silently deleted would pass the stdout-
+// only tests; these won't.
+
+// ctxWithExec wires a fakeExecutor under core.ExecutorKey on a fresh ctx.
+func ctxWithExec(fe *fakeExecutor) context.Context {
+	return context.WithValue(context.Background(), core.ExecutorKey, fe)
+}
+
+func TestDeleteLoadBalancers_CallLog(t *testing.T) {
+	// non-mock: exercise the real executor path so LoadBalancerDelete fires.
+	withFlags(t, false, flagMaxAgeNormal, flagMaxAgeLong)
+	fe := &fakeExecutor{}
+	ctx := ctxWithExec(fe)
+
+	lbs := []core.LoadBalancer{
+		// each skip reason should NOT hit LoadBalancerDelete
+		{Name: "permanent-lb", Age: 2.0, InstanceCount: 0, Region: "us", Type: "alb"},                   // PERM
+		{Name: "active-lb", Age: 2.0, InstanceCount: 3, Region: "us", Type: "alb"},                     // LIVE
+		{Name: "new-lb", Age: 0.01, InstanceCount: 0, Region: "us", Type: "alb"},                       // NEW
+		{Name: "mystery-lb", Age: 2.0, InstanceCount: -1, Region: "us", Type: "alb"},                   // N/A
+		// only this one is eligible for delete
+		{Name: "dead-lb", Age: 2.0, InstanceCount: 0, Region: "us", Type: "alb"},
+	}
+	captureOutput(t, func() { deleteLoadBalancers(ctx, lbs) })
+
+	if len(fe.deletedLBs) != 1 {
+		t.Fatalf("expected exactly 1 LoadBalancerDelete call, got %d: %+v", len(fe.deletedLBs), fe.deletedLBs)
+	}
+	if fe.deletedLBs[0].Name != "dead-lb" {
+		t.Errorf("expected dead-lb deleted, got %q", fe.deletedLBs[0].Name)
+	}
+}
+
+func TestDeleteLoadBalancers_SkipPathsDoNotInvokeDelete(t *testing.T) {
+	// dedicated negative test: skip-only input → zero executor calls.
+	withFlags(t, false, flagMaxAgeNormal, flagMaxAgeLong)
+	fe := &fakeExecutor{}
+	ctx := ctxWithExec(fe)
+
+	lbs := []core.LoadBalancer{
+		{Name: "permanent-lb", Age: 2.0, InstanceCount: 0, Region: "us", Type: "alb"},
+		{Name: "active-lb", Age: 2.0, InstanceCount: 3, Region: "us", Type: "alb"},
+		{Name: "new-lb", Age: 0.01, InstanceCount: 0, Region: "us", Type: "alb"},
+		{Name: "mystery-lb", Age: 2.0, InstanceCount: -1, Region: "us", Type: "alb"},
+	}
+	captureOutput(t, func() { deleteLoadBalancers(ctx, lbs) })
+
+	if len(fe.deletedLBs) != 0 {
+		t.Fatalf("expected no LoadBalancerDelete calls on skip-only input, got %d: %+v", len(fe.deletedLBs), fe.deletedLBs)
+	}
+}
+
+func TestDeleteVolumes_CallLog(t *testing.T) {
+	withFlags(t, false, flagMaxAgeNormal, flagMaxAgeLong)
+	fe := &fakeExecutor{}
+	ctx := ctxWithExec(fe)
+
+	volumes := []core.Volume{
+		{Name: "permanent-volume", Age: 2.0, Region: "us", Attached: false},                            // PERM → skip
+		{Name: "attached-volume", Age: 2.0, Region: "us", Attached: true},                              // attached → skip
+		{Name: "new-volume", Age: 0.01, Region: "us", Attached: false},                                 // too new → skip
+		{Name: "permanent-by-tag", Age: 2.0, Region: "us", Attached: false, Tags: []string{"lifecycle=permanent"}}, // PERM → skip
+		{Name: "dead-volume", Age: 2.0, Region: "us", Attached: false},                                 // delete
+	}
+	captureOutput(t, func() { deleteVolumes(ctx, volumes) })
+
+	if len(fe.deletedVolumes) != 1 {
+		t.Fatalf("expected exactly 1 VolumeDelete call, got %d: %+v", len(fe.deletedVolumes), fe.deletedVolumes)
+	}
+	if fe.deletedVolumes[0].Name != "dead-volume" {
+		t.Errorf("expected dead-volume deleted, got %q", fe.deletedVolumes[0].Name)
+	}
+}
+
+func TestDeleteVolumes_SkipPathsDoNotInvokeDelete(t *testing.T) {
+	withFlags(t, false, flagMaxAgeNormal, flagMaxAgeLong)
+	fe := &fakeExecutor{}
+	ctx := ctxWithExec(fe)
+
+	volumes := []core.Volume{
+		{Name: "permanent-volume", Age: 2.0, Region: "us", Attached: false},
+		{Name: "attached-volume", Age: 2.0, Region: "us", Attached: true},
+		{Name: "new-volume", Age: 0.01, Region: "us", Attached: false},
+	}
+	captureOutput(t, func() { deleteVolumes(ctx, volumes) })
+
+	if len(fe.deletedVolumes) != 0 {
+		t.Fatalf("expected no VolumeDelete calls on skip-only input, got %d: %+v", len(fe.deletedVolumes), fe.deletedVolumes)
 	}
 }

@@ -276,9 +276,13 @@ func (d DigitalOcean) client(ctx context.Context) *godo.Client {
 	oauthClient := oauth2.NewClient(context.Background(), tokenSource)
 	client := godo.NewClient(oauthClient)
 	// test seam: if a base URL override is present, redirect the SDK to it.
+	// surface parse failures via Warnf — silently falling through to
+	// api.digitalocean.com on a misconfigured override is dangerous.
 	if base, ok := ctx.Value(core.DOBaseURLKey).(string); ok && base != "" {
 		if u, err := url.Parse(base + "/"); err == nil {
 			client.BaseURL = u
+		} else {
+			core.Warnf(ctx, "digitalocean BaseURL parse(%q) failed: %v", base, err)
 		}
 	}
 	return client

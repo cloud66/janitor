@@ -93,12 +93,12 @@ func TestDigitalOcean_LoadBalancersGet(t *testing.T) {
 		}
 	})
 
-	t.Run("tag-based lb returns zero instance count (documents current behavior)", func(t *testing.T) {
-		// PINNED SMELL: DO's /v2/load_balancers response only carries droplet_ids
-		// when the LB was created with explicit droplets. Tag-based LBs omit the
-		// list, so InstanceCount=0 is what the API gives us — a true count would
-		// require a second /v2/droplets?tag=<x> call per LB. Accepted until the
-		// resolver path is implemented; update this test if that changes.
+	t.Run("TODO(B4) tag-based lb returns zero instance count — known limitation, NOT a contract", func(t *testing.T) {
+		// TODO(B4): known-limitation pin, NOT a contract. DO's /v2/load_balancers
+		// response carries droplet_ids only for explicit-droplet LBs. Tag-based
+		// LBs omit it, so InstanceCount=0 here reflects the missing resolver path
+		// (would need a second /v2/droplets?tag=<x> call). If that resolver lands,
+		// FLIP this expectation to the real count rather than deleting the case.
 		body := readFixture(t, "digitalocean/load_balancers_tag_based.json")
 		mux := http.NewServeMux()
 		mux.HandleFunc("/v2/load_balancers", func(w http.ResponseWriter, r *http.Request) {
