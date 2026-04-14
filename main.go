@@ -243,7 +243,7 @@ func main() {
 // (-, _, ., whitespace) and lowercases each token. used for word-boundary
 // matching so `alongside-prod` does not register as containing "long" and
 // `prolonged-task` does not match either, while `my-long-running-job` still
-// does. addresses panel finding C7 (B4 substring false positives).
+// does. addresses panel round-2 C7 (B4 substring false positives).
 func nameTokens(name string) []string {
 	if name == "" {
 		return nil
@@ -255,7 +255,7 @@ func nameTokens(name string) []string {
 }
 
 // nameMatchesToken returns true when any delimiter-split token of name equals
-// marker (already lowercase). word-boundary semantics — see nameTokens.
+// marker (already lowercase).
 func nameMatchesToken(name, marker string) bool {
 	for _, tok := range nameTokens(name) {
 		if tok == marker {
@@ -269,12 +269,11 @@ func nameMatchesToken(name, marker string) bool {
 // delimiter-split token of value equals marker. word-boundary semantics on
 // the value mirror nameTokens so `lifecycle=long-running` matches "long" but
 // `lifecycle=prolonged-window` does not. require explicit `key=value` form:
-// bare tags are not allowed to pin resources (panel C3 availability attack).
+// bare tags are not allowed to pin resources.
 func tagValueMatchesToken(tags []string, marker string) bool {
 	for _, tag := range tags {
 		i := strings.IndexByte(tag, '=')
 		if i < 0 {
-			// no "=" — bare tags do NOT pin (panel C3).
 			continue
 		}
 		if nameMatchesToken(tag[i+1:], marker) {
@@ -284,8 +283,7 @@ func tagValueMatchesToken(tags []string, marker string) bool {
 	return false
 }
 
-// isPermanent returns true when any name token equals "permanent" or any tag
-// value equals "permanent" (key=value form). symmetric with hasSampleTag.
+// isPermanent — name token OR any tag-value token matches "permanent".
 func isPermanent(name string, tags []string) bool {
 	if nameMatchesToken(name, core.TagPermanent) {
 		return true
@@ -293,8 +291,7 @@ func isPermanent(name string, tags []string) bool {
 	return tagValueMatchesToken(tags, core.TagPermanent)
 }
 
-// hasLongName returns true when any name token equals "long" or any tag value
-// equals "long". symmetric with isPermanent and hasSampleTag.
+// hasLongName — name token OR any tag-value token matches "long".
 func hasLongName(name string, tags []string) bool {
 	if nameMatchesToken(name, core.TagLong) {
 		return true
@@ -304,8 +301,8 @@ func hasLongName(name string, tags []string) bool {
 
 // stripInvisibleAndSpace removes ASCII whitespace AND the common zero-width
 // Unicode characters that an attacker could insert to evade the sample-tag
-// check (panel finding C3). U+200B/C/D and BOM are the only realistic
-// vectors via tag UIs that round-trip Unicode untouched.
+// check. U+200B/C/D and BOM are the realistic vectors via tag UIs that
+// round-trip Unicode untouched.
 func stripInvisibleAndSpace(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
@@ -319,9 +316,8 @@ func stripInvisibleAndSpace(s string) string {
 }
 
 // hasSampleTag checks if any tag has key core.TagKeyC66Stack with a value
-// containing the sample marker. vultr tags are flat strings in key=value
-// format (e.g. "C66-STACK=maestro-sample-prd"). zero-width characters in the
-// key are stripped before comparison so they cannot be used to evade the
+// containing the sample marker. zero-width characters in the key are
+// stripped before comparison so they cannot be used to evade the
 // sample-skip safety net.
 func hasSampleTag(tags []string) bool {
 	wantKey := strings.ToLower(core.TagKeyC66Stack)
@@ -330,7 +326,6 @@ func hasSampleTag(tags []string) bool {
 		if i < 0 {
 			continue
 		}
-		// strip zero-width + whitespace before lower-casing key.
 		key := strings.ToLower(stripInvisibleAndSpace(tag[:i]))
 		if key != wantKey {
 			continue

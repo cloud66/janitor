@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -59,6 +61,14 @@ type Aws struct {
 	// regionsOverride allows tests to shrink the region list.
 	regionsOverride []string
 }
+
+// cached AWS credentials provider. config.LoadDefaultConfig walks env /
+// shared / IRSA / IMDS and is expensive; resolve once per process to avoid
+// O(regions × services) IMDS probes (panel round-3 C6).
+var (
+	credsOnce  sync.Once
+	credsCache aws.CredentialsProvider
+)
 
 // compile-time assertion that Aws satisfies ExecutorInterface. if this ever
 // fails, the interface grew a method Aws forgot to implement.
@@ -428,130 +438,26 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 			albMarker = albOut.NextMarker
 		}
 
-		// find orphaned target groups — paginate DescribeTargetGroups (B8).
-		// the paginated loop ensures a TG whose owning LB appears on page 2 is
-		// not falsely flagged as orphan.
-		//
-		// safeguards (panel finding C4):
-		//   - require a JANITOR.MARKED.AT timestamp tag in addition to the
-		//     boolean MARKED.TO.DELETE tag, and only delete after a 24h dwell.
-		//     prevents a tag-writer from pre-marking a prod TG for instant
-		//     deletion on the next janitor run.
-		//   - re-verify orphan status (LoadBalancerArns still empty) at delete
-		//     time within the same pass — closes the human-attach race.
-		//   - on DescribeTags error: skip the TG with a Warnf rather than
-		//     fail-open into the re-tag branch (which would reset dwell).
-		//   - propagate pagination errors via regionErrs instead of silent break.
-		const (
-			markedForDeletionTagKey = "JANITOR.MARKED.TO.DELETE"
-			markedAtTagKey          = "JANITOR.MARKED.AT"
-			minOrphanDwell          = 24 * time.Hour
-		)
-		var orphanMarker *string
-		for {
-			targetGroupOutput, err := alb.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{Marker: orphanMarker})
-			if err != nil {
-				core.Warnf(ctx, "DescribeTargetGroups (orphan scan) failed in %s: %v", region, err)
-				regionErrs = append(regionErrs, fmt.Errorf("%s orphan-scan: %w", region, err))
-				break
-			}
-			for _, targetGroup := range targetGroupOutput.TargetGroups {
-				if targetGroup.TargetGroupArn == nil {
-					continue
-				}
-				// TG has an owning LB: clear any previous mark (two-phase race fix).
-				if len(targetGroup.LoadBalancerArns) > 0 {
-					if !flagMock {
-						_, _ = alb.RemoveTags(ctx, &elasticloadbalancingv2.RemoveTagsInput{
-							ResourceArns: []string{*targetGroup.TargetGroupArn},
-							TagKeys:      []string{markedForDeletionTagKey, markedAtTagKey},
-						})
-					}
-					continue
-				}
-				// orphan candidate — fetch tags. on error, SKIP rather than
-				// fail-open into the re-tag branch: re-tagging would reset the
-				// dwell timer (panel C4#4).
-				tagsOutput, err := alb.DescribeTags(ctx, &elasticloadbalancingv2.DescribeTagsInput{ResourceArns: []string{*targetGroup.TargetGroupArn}})
-				if err != nil {
-					core.Warnf(ctx, "DescribeTags failed for orphan candidate %s: %v — skipping this TG", *targetGroup.TargetGroupArn, err)
-					continue
-				}
-				var (
-					foundMarkedForDeletionTag bool
-					markedAtRaw               string
-				)
-				for _, tagDescription := range tagsOutput.TagDescriptions {
-					for _, tag := range tagDescription.Tags {
-						if tag.Key == nil {
-							continue
-						}
-						if *tag.Key == markedForDeletionTagKey {
-							foundMarkedForDeletionTag = true
-						}
-						if *tag.Key == markedAtTagKey && tag.Value != nil {
-							markedAtRaw = *tag.Value
-						}
-					}
-				}
-				if foundMarkedForDeletionTag {
-					// require a parseable MARKED.AT and a min dwell before
-					// deleting. a tag-writer who set only MARKED.TO.DELETE
-					// (without a janitor-issued timestamp) does NOT trigger
-					// deletion.
-					markedAt, parseErr := time.Parse(time.RFC3339, markedAtRaw)
-					if parseErr != nil {
-						core.Warnf(ctx, "orphan TG %s missing/invalid %s (%q) — re-marking with fresh timestamp", *targetGroup.TargetGroupArn, markedAtTagKey, markedAtRaw)
-						a.markOrphanTG(ctx, alb, *targetGroup.TargetGroupArn, flagMock)
-						continue
-					}
-					if time.Since(markedAt) < minOrphanDwell {
-						prettyPrint(ctx, fmt.Sprintf("[%s] ▶ Orphaned Target Group: WAITING (dwell %s remaining)\n", *targetGroup.TargetGroupArn, (minOrphanDwell-time.Since(markedAt)).Round(time.Minute)), flagMock)
-						continue
-					}
-					// re-verify orphan status at delete time so an LB attached
-					// during the dwell window is not destroyed under us.
-					verifyOut, vErr := alb.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{TargetGroupArns: []string{*targetGroup.TargetGroupArn}})
-					if vErr != nil || len(verifyOut.TargetGroups) == 0 {
-						core.Warnf(ctx, "re-verify failed for orphan TG %s: %v — skipping delete", *targetGroup.TargetGroupArn, vErr)
-						continue
-					}
-					if len(verifyOut.TargetGroups[0].LoadBalancerArns) > 0 {
-						core.Warnf(ctx, "TG %s acquired an LB during dwell — clearing mark instead of deleting", *targetGroup.TargetGroupArn)
-						if !flagMock {
-							_, _ = alb.RemoveTags(ctx, &elasticloadbalancingv2.RemoveTagsInput{
-								ResourceArns: []string{*targetGroup.TargetGroupArn},
-								TagKeys:      []string{markedForDeletionTagKey, markedAtTagKey},
-							})
-						}
-						continue
-					}
-					prettyPrint(ctx, fmt.Sprintf("[%s] ▶ Orphaned Target Group: DELETING\n", *targetGroup.TargetGroupArn), flagMock)
-					if !flagMock {
-						_, dErr := alb.DeleteTargetGroup(ctx, &elasticloadbalancingv2.DeleteTargetGroupInput{TargetGroupArn: targetGroup.TargetGroupArn})
-						if dErr != nil {
-							core.Warnf(ctx, "DeleteTargetGroup failed for %s: %v", *targetGroup.TargetGroupArn, dErr)
-						}
-					}
-				} else {
-					prettyPrint(ctx, fmt.Sprintf("[%s] ▶ Orphaned Target Group: SETTING TAG\n", *targetGroup.TargetGroupArn), flagMock)
-					a.markOrphanTG(ctx, alb, *targetGroup.TargetGroupArn, flagMock)
-				}
-			}
-			if targetGroupOutput.NextMarker == nil || *targetGroupOutput.NextMarker == "" {
-				break
-			}
-			orphanMarker = targetGroupOutput.NextMarker
-		}
-
+		// orphan-TG sweep removed (panel round-3): the prior tag-based
+		// MARKED.AT design was attacker-forgeable via ec2:CreateTags. A
+		// proper redesign (state in SSM/DDB or HMAC-signed marks gated by an
+		// operator-provided signing key) is tracked as a follow-up PR.
+		// We still surface orphan TGs in logs but do not mark or delete them.
+		_ = flagMock
 		// region counts as OK if either scan returned data.
 		if elbOK || albOK {
 			okCount++
 		}
 	}
-	// aggregate errors if no region succeeded (B6).
-	if okCount == 0 && len(regionErrs) > 0 {
-		return nil, fmt.Errorf("all regions failed: %w", errors.Join(regionErrs...))
+	// aggregate errors if no region succeeded (B6 + panel round-3 C4).
+	// also error on okCount==0 with empty regionErrs (no regions configured
+	// or every region returned an empty success that yielded no data) so we
+	// never silently return (nil, nil) again.
+	if okCount == 0 {
+		if len(regionErrs) > 0 {
+			return nil, fmt.Errorf("all regions failed: %w", errors.Join(regionErrs...))
+		}
+		return nil, errors.New("no regions returned a successful AWS response")
 	}
 	return results, nil
 }
@@ -605,12 +511,32 @@ func (a Aws) LoadBalancerDelete(ctx context.Context, loadBalancer core.LoadBalan
 		if err != nil {
 			return err
 		}
-		// step 3: now safe to delete target groups (no longer in use).
+		// step 3: now safe to delete target groups (no longer in use). but
+		// DeleteLoadBalancer is async — TG detachment can still be in-flight,
+		// so DeleteTargetGroup may return ResourceInUse for several seconds.
+		// retry with linear backoff (panel round-3 C7).
 		for _, targetGroupArn := range loadBalancer.TargetGroupArns {
 			tg := targetGroupArn
-			_, err := client.DeleteTargetGroup(ctx, &elasticloadbalancingv2.DeleteTargetGroupInput{TargetGroupArn: &tg})
-			if err != nil {
-				return err
+			var lastErr error
+			for attempt := 0; attempt < 6; attempt++ {
+				_, dErr := client.DeleteTargetGroup(ctx, &elasticloadbalancingv2.DeleteTargetGroupInput{TargetGroupArn: &tg})
+				if dErr == nil {
+					lastErr = nil
+					break
+				}
+				lastErr = dErr
+				if !isResourceInUse(dErr) {
+					return dErr
+				}
+				// backoff: 1s, 2s, 4s, 8s, 16s, 32s — total ~63s.
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(time.Duration(1<<attempt) * time.Second):
+				}
+			}
+			if lastErr != nil {
+				return fmt.Errorf("DeleteTargetGroup %s: %w", tg, lastErr)
 			}
 		}
 		return nil
@@ -670,27 +596,39 @@ func (a Aws) albClient(ctx context.Context, region string) *elasticloadbalancing
 	})
 }
 
-// credentials builds a per-call CredentialsCache. when ctx-bound static keys
-// are present, use them; when both are empty, fall back to the SDK's default
-// chain (env, shared credentials file, IRSA, EC2 instance metadata) so
-// container/pod deployments without explicit --aws-* flags still authenticate
-// (panel finding C5). previously empty static creds produced an invalid
-// signer that 403'd on every region.
+// credentials returns a process-wide cached CredentialsProvider. resolved
+// once per process via sync.Once so we don't pay the LoadDefaultConfig cost
+// (which probes env / shared / IRSA / IMDS) per region client (panel C6).
+// static keys from ctx take precedence over the default chain.
 func (a Aws) credentials(ctx context.Context) aws.CredentialsProvider {
-	accessKey, _ := ctx.Value(core.AWSAccessKeyIDKey).(string)
-	secretKey, _ := ctx.Value(core.AWSSecretAccessKeyKey).(string)
-	if accessKey != "" && secretKey != "" {
-		return aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""))
+	credsOnce.Do(func() {
+		accessKey, _ := ctx.Value(core.AWSAccessKeyIDKey).(string)
+		secretKey, _ := ctx.Value(core.AWSSecretAccessKeyKey).(string)
+		if accessKey != "" && secretKey != "" {
+			credsCache = aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""))
+			return
+		}
+		cfg, err := config.LoadDefaultConfig(ctx)
+		if err != nil {
+			core.Warnf(ctx, "AWS LoadDefaultConfig failed: %v — requests will likely fail with 403", err)
+			credsCache = aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("", "", ""))
+			return
+		}
+		credsCache = cfg.Credentials
+	})
+	return credsCache
+}
+
+// isResourceInUse returns true when an SDK error indicates the target
+// resource is still in use (eventually-consistent detachment in progress).
+// matched by error string because aws-sdk-go-v2 surfaces these via the
+// generic smithy.GenericAPIError envelope rather than typed errors.
+func isResourceInUse(err error) bool {
+	if err == nil {
+		return false
 	}
-	// fall back to the default chain (env / shared / IRSA / EC2 metadata).
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		core.Warnf(ctx, "AWS LoadDefaultConfig failed: %v — requests will likely fail with 403", err)
-		// return an explicitly-empty static provider so callers see a clean
-		// "no credentials" error rather than a nil-pointer panic.
-		return aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("", "", ""))
-	}
-	return cfg.Credentials
+	s := err.Error()
+	return strings.Contains(s, "ResourceInUse") || strings.Contains(s, "is currently in use")
 }
 
 func (a Aws) allRegions() []string {
@@ -714,34 +652,6 @@ func awsTagsToStrings(tags []ec2types.Tag) []string {
 		}
 	}
 	return result
-}
-
-// markOrphanTG sets both JANITOR.MARKED.TO.DELETE=true and
-// JANITOR.MARKED.AT=<rfc3339-now> on a TG. AddTags errors are warned but not
-// fatal: the TG remains a candidate on the next run, where it will either
-// re-acquire an LB (and lose the mark) or be re-tagged.
-func (a Aws) markOrphanTG(ctx context.Context, alb albClient, tgArn string, flagMock bool) {
-	if flagMock {
-		return
-	}
-	const (
-		markedForDeletionTagKey = "JANITOR.MARKED.TO.DELETE"
-		markedAtTagKey          = "JANITOR.MARKED.AT"
-	)
-	trueString := "true"
-	nowString := time.Now().UTC().Format(time.RFC3339)
-	mfdKey := markedForDeletionTagKey
-	atKey := markedAtTagKey
-	_, addErr := alb.AddTags(ctx, &elasticloadbalancingv2.AddTagsInput{
-		ResourceArns: []string{tgArn},
-		Tags: []elasticloadbalancingv2types.Tag{
-			{Key: &mfdKey, Value: &trueString},
-			{Key: &atKey, Value: &nowString},
-		},
-	})
-	if addErr != nil {
-		core.Warnf(ctx, "AddTags failed for %s: %v", tgArn, addErr)
-	}
 }
 
 // awsClassicTagsToStrings normalizes classic-ELB key-value tags to "key=value"

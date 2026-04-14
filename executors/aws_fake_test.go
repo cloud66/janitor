@@ -451,89 +451,10 @@ func TestAws_ServersGet_AllRegionsFail_MultiRegion_B6(t *testing.T) {
 	}
 }
 
-// --- P5-T5: AddTags error handling (B7) ------------------------------------
-
-func TestAws_OrphanTG_AddTagsError_B7(t *testing.T) {
-	log := &callLog{}
-	alb := newFakeALB(log)
-	alb.addTagsErr = errors.New("ThrottlingException")
-	// orphan TG: no LoadBalancerArns, no existing marked-for-deletion tag.
-	tgArn := "arn:tg:orphan"
-	alb.tgPages = []*elasticloadbalancingv2.DescribeTargetGroupsOutput{
-		{TargetGroups: []elbv2types.TargetGroup{
-			{TargetGroupArn: &tgArn, LoadBalancerArns: nil},
-		}},
-	}
-	a := newTestAws(&fakeEC2{log: log}, &fakeELB{log: log}, alb)
-	buf, ctx := captureOut(t)
-
-	if _, err := a.LoadBalancersGet(ctx, false); err != nil {
-		t.Fatalf("LoadBalancersGet err: %v", err)
-	}
-
-	// B7: AddTags failed. We must log a warning and NOT record the tag
-	// (so that next run does not falsely treat this TG as "previously marked"
-	// and delete it).
-	if !strings.Contains(buf.String(), "[WARN] AddTags failed") {
-		t.Fatalf("expected WARN line, got: %q", buf.String())
-	}
-	// fake AddTags returns the error before storing — so tags map stays empty.
-	if len(alb.tags[tgArn]) != 0 {
-		t.Fatalf("TG must NOT be marked when AddTags fails, got tags: %+v", alb.tags[tgArn])
-	}
-}
-
-// --- P5-T6: pagination for TG describe (B8) --------------------------------
-
-func TestAws_OrphanTG_PaginationFindsOwningLB_B8(t *testing.T) {
-	log := &callLog{}
-	alb := newFakeALB(log)
-	tgArn := "arn:tg:owned"
-	// page 1 is "empty of the TG we care about"; page 2 contains the TG,
-	// and that TG has an owning LB. Before the pagination fix the orphan scan
-	// only saw page 1 and might have falsely flagged the TG.
-	page1Marker := "page1"
-	alb.tgPages = []*elasticloadbalancingv2.DescribeTargetGroupsOutput{
-		{
-			TargetGroups: []elbv2types.TargetGroup{}, // empty page
-			NextMarker:   &page1Marker,
-		},
-		{
-			TargetGroups: []elbv2types.TargetGroup{
-				{TargetGroupArn: &tgArn, LoadBalancerArns: []string{"arn:some-lb"}},
-			},
-		},
-	}
-	// pre-seed tag as though a previous run falsely marked it — the owning-LB
-	// branch should REMOVE the tag, not delete the TG.
-	key := "JANITOR.MARKED.TO.DELETE"
-	val := "true"
-	alb.tags[tgArn] = []elbv2types.Tag{{Key: &key, Value: &val}}
-	a := newTestAws(&fakeEC2{log: log}, &fakeELB{log: log}, alb)
-
-	if _, err := a.LoadBalancersGet(context.Background(), false); err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	// must have visited page 2 (at least 2 top-level DescribeTargetGroups calls).
-	tgCalls := 0
-	for _, c := range log.calls {
-		if c == "alb.DescribeTargetGroups" {
-			tgCalls++
-		}
-	}
-	if tgCalls < 2 {
-		t.Fatalf("expected paginated TG describe (≥2 calls), got %d", tgCalls)
-	}
-	// P5-T8 two-phase race: tag must have been REMOVED (TG re-attached).
-	for _, c := range log.calls {
-		if c == "alb.DeleteTargetGroup" {
-			t.Fatal("TG with owning LB must NOT be deleted")
-		}
-	}
-	if len(alb.tags[tgArn]) != 0 {
-		t.Fatalf("tag should be removed on re-attached TG, got %+v", alb.tags[tgArn])
-	}
-}
+// orphan-TG sweep removed in this PR (panel round-3); related tests
+// (TestAws_OrphanTG_AddTagsError_B7, TestAws_OrphanTG_PaginationFindsOwningLB_B8)
+// will return when the sweep is reintroduced with HMAC-signed marks or
+// out-of-band state in a follow-up PR.
 
 // --- P5-T6 additionally: paginated DescribeInstances pagination -----------
 
