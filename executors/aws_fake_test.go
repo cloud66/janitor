@@ -33,11 +33,11 @@ func (c *callLog) add(s string) { c.calls = append(c.calls, s) }
 // fakeEC2 is a record-and-replay EC2 fake.
 // describePages drives pagination for DescribeInstances (one page per element).
 type fakeEC2 struct {
-	log             *callLog
-	describePages   []*ec2.DescribeInstancesOutput
-	describeErr     error
-	modifyErr       error
-	terminateErr    error
+	log           *callLog
+	describePages []*ec2.DescribeInstancesOutput
+	describeErr   error
+	modifyErr     error
+	terminateErr  error
 }
 
 func (f *fakeEC2) DescribeInstances(ctx context.Context, in *ec2.DescribeInstancesInput, opts ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -76,6 +76,9 @@ type fakeELB struct {
 	deleteErr   error
 	lbs         []elbtypes.LoadBalancerDescription
 	lbPages     []*elasticloadbalancing.DescribeLoadBalancersOutput
+	// tags keyed by classic LB name; DescribeTags returns these.
+	tags    map[string][]elbtypes.Tag
+	tagsErr error
 }
 
 func (f *fakeELB) DescribeLoadBalancers(ctx context.Context, in *elasticloadbalancing.DescribeLoadBalancersInput, opts ...func(*elasticloadbalancing.Options)) (*elasticloadbalancing.DescribeLoadBalancersOutput, error) {
@@ -100,6 +103,20 @@ func (f *fakeELB) DescribeLoadBalancers(ctx context.Context, in *elasticloadbala
 func (f *fakeELB) DeleteLoadBalancer(ctx context.Context, in *elasticloadbalancing.DeleteLoadBalancerInput, opts ...func(*elasticloadbalancing.Options)) (*elasticloadbalancing.DeleteLoadBalancerOutput, error) {
 	f.log.add("elb.DeleteLoadBalancer")
 	return &elasticloadbalancing.DeleteLoadBalancerOutput{}, f.deleteErr
+}
+
+// DescribeTags returns per-LB tags from the f.tags map keyed by name.
+func (f *fakeELB) DescribeTags(ctx context.Context, in *elasticloadbalancing.DescribeTagsInput, opts ...func(*elasticloadbalancing.Options)) (*elasticloadbalancing.DescribeTagsOutput, error) {
+	f.log.add("elb.DescribeTags")
+	if f.tagsErr != nil {
+		return nil, f.tagsErr
+	}
+	var descs []elbtypes.TagDescription
+	for _, name := range in.LoadBalancerNames {
+		nameCopy := name
+		descs = append(descs, elbtypes.TagDescription{LoadBalancerName: &nameCopy, Tags: f.tags[name]})
+	}
+	return &elasticloadbalancing.DescribeTagsOutput{TagDescriptions: descs}, nil
 }
 
 // fakeALB is the biggest fake — most ALB behaviors live here.
@@ -786,7 +803,7 @@ func TestAws_ALB_PerLBTargetGroupsPagination(t *testing.T) {
 // driven by NextMarker just like ALB. Without the fake honoring Marker, a
 // regression in elbMarker handling (never advancing, or failing to terminate
 // on empty-string Marker) would go undetected. Covers both the "NextMarker
-// non-nil → fetch next page" and "NextMarker=='' → terminate" branches.
+// non-nil → fetch next page" and "NextMarker==” → terminate" branches.
 func TestAws_ELB_Pagination_B8(t *testing.T) {
 	log := &callLog{}
 	n1, n2, n3 := "lb1", "lb2", "lb3"

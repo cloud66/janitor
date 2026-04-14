@@ -65,13 +65,9 @@ func TestIsPermanent_NameContainsPermanent(t *testing.T) {
 		{"plain name no match", "my-server", nil, false},
 		{"prefix perm not full word", "perm-server", nil, false},
 		{"empty name", "", nil, false},
-		// TODO(B4): known-limitation pin, NOT a behavior contract. isPermanent
-		// uses strings.Contains so "supermanent-name" matches by coincidence.
-		// Closed as won't-fix (see PR #5 panel review) because no real-fleet
-		// resource triggers it and a word-boundary tightening would break
-		// legitimate "is-permanent" / "permanent_box" names. If a future fix
-		// adds word-boundary matching, FLIP this case to `false` — don't delete.
-		{"TODO(B4) substring false positive supermanent", "supermanent-name", nil, true},
+		// B4 fixed: word-boundary matching on `-`/`_`/`.` delimiters. The
+		// single token "supermanent" no longer matches "permanent".
+		{"B4 supermanent no longer matches", "supermanent-name", nil, false},
 	}
 
 	for _, tt := range tests {
@@ -155,13 +151,10 @@ func TestHasLongName(t *testing.T) {
 		{"nil tags", "my-server", nil, false},
 		// name match overrides tag miss
 		{"long in name, no tag match", "long-box", []string{"env=prod"}, true},
-		// TODO(B4): known-limitation pins, NOT contracts. "prolonged"/"belonging"
-		// match because hasLongName is a substring check on "long". Won't-fix per
-		// PR #5 panel review — real fleets use "long-running"/"long_lived". If a
-		// future tightening adds word-boundary matching, FLIP these expectations
-		// to `false` rather than deleting them.
-		{"TODO(B4) substring false positive prolonged", "prolonged-task", nil, true},
-		{"TODO(B4) substring false positive belonging", "belonging", nil, true},
+		// B4 fixed: tokens are split on `-`/`_`/`.`/space; "prolonged" and
+		// "belonging" are single tokens that don't equal "long".
+		{"B4 prolonged no longer matches", "prolonged-task", nil, false},
+		{"B4 belonging no longer matches", "belonging", nil, false},
 	}
 
 	for _, tt := range tests {
@@ -564,10 +557,10 @@ func TestDeleteLoadBalancers_CallLog(t *testing.T) {
 
 	lbs := []core.LoadBalancer{
 		// each skip reason should NOT hit LoadBalancerDelete
-		{Name: "permanent-lb", Age: 2.0, InstanceCount: 0, Region: "us", Type: "alb"},                   // PERM
-		{Name: "active-lb", Age: 2.0, InstanceCount: 3, Region: "us", Type: "alb"},                     // LIVE
-		{Name: "new-lb", Age: 0.01, InstanceCount: 0, Region: "us", Type: "alb"},                       // NEW
-		{Name: "mystery-lb", Age: 2.0, InstanceCount: -1, Region: "us", Type: "alb"},                   // N/A
+		{Name: "permanent-lb", Age: 2.0, InstanceCount: 0, Region: "us", Type: "alb"}, // PERM
+		{Name: "active-lb", Age: 2.0, InstanceCount: 3, Region: "us", Type: "alb"},    // LIVE
+		{Name: "new-lb", Age: 0.01, InstanceCount: 0, Region: "us", Type: "alb"},      // NEW
+		{Name: "mystery-lb", Age: 2.0, InstanceCount: -1, Region: "us", Type: "alb"},  // N/A
 		// only this one is eligible for delete
 		{Name: "dead-lb", Age: 2.0, InstanceCount: 0, Region: "us", Type: "alb"},
 	}
@@ -606,11 +599,11 @@ func TestDeleteVolumes_CallLog(t *testing.T) {
 	ctx := ctxWithExec(fe)
 
 	volumes := []core.Volume{
-		{Name: "permanent-volume", Age: 2.0, Region: "us", Attached: false},                            // PERM → skip
-		{Name: "attached-volume", Age: 2.0, Region: "us", Attached: true},                              // attached → skip
-		{Name: "new-volume", Age: 0.01, Region: "us", Attached: false},                                 // too new → skip
+		{Name: "permanent-volume", Age: 2.0, Region: "us", Attached: false},                                        // PERM → skip
+		{Name: "attached-volume", Age: 2.0, Region: "us", Attached: true},                                          // attached → skip
+		{Name: "new-volume", Age: 0.01, Region: "us", Attached: false},                                             // too new → skip
 		{Name: "permanent-by-tag", Age: 2.0, Region: "us", Attached: false, Tags: []string{"lifecycle=permanent"}}, // PERM → skip
-		{Name: "dead-volume", Age: 2.0, Region: "us", Attached: false},                                 // delete
+		{Name: "dead-volume", Age: 2.0, Region: "us", Attached: false},                                             // delete
 	}
 	captureOutput(t, func() { deleteVolumes(ctx, volumes) })
 

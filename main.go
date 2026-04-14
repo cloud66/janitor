@@ -44,8 +44,8 @@ var (
 	flagDOPat              string
 	flagAWSAccessKeyID     string
 	flagAWSSecretAccessKey string
-	flagVultrPat        string
-	flagHetznerPat    string
+	flagVultrPat           string
+	flagHetznerPat         string
 )
 
 func prettyPrint(message string, mock bool) {
@@ -75,10 +75,11 @@ func main() {
 	flag.StringVar(&flagHetznerPat, "hetzner-pat", os.Getenv("JANITOR_HETZNER_PAT"), "Hetzner Personal Access Token")
 	//config
 	flag.BoolVar(&flagMock, "mock", strings.ToLower(os.Getenv("MOCK")) != "false", "Don't actually delete anything, just show what *would* happen")
-	// --yes is required for any non-mock delete run. operators or CI must opt
-	// in explicitly; relying on `--mock=false` alone is a single-typo away
-	// from a destructive run against the wrong account.
-	flag.BoolVar(&flagYes, "yes", strings.ToLower(os.Getenv("JANITOR_YES")) == "true", "Required to perform real deletions; without it, --mock=false is rejected.")
+	// --yes must be passed explicitly on the command line for any live (non-
+	// mock) run. env-source is intentionally NOT honoured: a CI step inheriting
+	// JANITOR_YES from a parent shell would otherwise enable destructive runs
+	// with no flag visible in `ps` / audit logs (panel finding C2).
+	flag.BoolVar(&flagYes, "yes", false, "Required CLI flag for non-mock deletions; --mock=false without --yes is rejected.")
 	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
 
 	var maxAgeNormal, maxAgeLong float64
@@ -135,17 +136,21 @@ func main() {
 	// AWS executor now reads typed ctx keys only (Phase 5 migration complete).
 	ctx = context.WithValue(ctx, core.AWSAccessKeyIDKey, flagAWSAccessKeyID)
 	ctx = context.WithValue(ctx, core.AWSSecretAccessKeyKey, flagAWSSecretAccessKey)
-	// surface executor warnings and normal output through the same `out` sink
-	// so tests and users see "[WARN] ..." lines alongside mock markers.
-	ctx = context.WithValue(ctx, core.WarnWriterKey, out)
+	// route warnings to stderr so pipes like `janitor ... | tee report` keep
+	// data and diagnostics separate; normal output stays on the `out` sink.
+	ctx = context.WithValue(ctx, core.WarnWriterKey, io.Writer(os.Stderr))
 	ctx = context.WithValue(ctx, core.OutWriterKey, out)
 
 	if flagAction == actionDelete {
-		// guard: --mock=false is destructive; require --yes (or JANITOR_YES=true)
-		// so a typo cannot trigger live deletion.
+		// guard: --mock=false is destructive; require --yes on the CLI.
 		if !flagMock && !flagYes {
-			fmt.Println("Refusing to run with --mock=false without --yes (or JANITOR_YES=true).")
+			fmt.Fprintln(os.Stderr, "Refusing to run with --mock=false without --yes on the command line.")
 			os.Exit(2)
+		}
+		// loud banner: announce live mode + the cloud(s) being targeted so
+		// operators see what's about to happen before any API call fires.
+		if !flagMock {
+			fmt.Fprintf(os.Stderr, "*** LIVE DELETION MODE — clouds=%s ***\n", flagClouds)
 		}
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
 		prettyPrint(fmt.Sprintf("NORMAL ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeNormal, flagMaxAgeNormal*24.0), flagMock)
@@ -163,7 +168,14 @@ func main() {
 		prettyPrint(fmt.Sprintf("[%s]\n", strings.ToUpper(userCloud)), flagMock)
 
 		if _, ok := clouds[userCloud]; !ok {
-			fmt.Printf("Unsupported cloud %s\n", flagClouds)
+			// in live mode, refuse to silently proceed past a typo'd cloud
+			// token (e.g. `--clouds=aws,awz`); a no-op on `awz` with deletes
+			// against `aws` is exactly the failure mode --yes guards against.
+			if !flagMock {
+				fmt.Fprintf(os.Stderr, "Unknown cloud %q in --clouds=%q; refusing to continue in live mode.\n", userCloud, flagClouds)
+				os.Exit(2)
+			}
+			fmt.Printf("Unsupported cloud %q (skipping)\n", userCloud)
 			continue
 		}
 
@@ -227,68 +239,102 @@ func main() {
 	}
 }
 
-// tagValueContains returns true when any tag is `key=value` (with optional
-// whitespace around key) and the lower-cased value contains marker. tags
-// without "=" are treated as bare values for backwards compat with providers
-// that emit flat tag strings (e.g. AWS Name=foo gets normalised elsewhere).
-// scoping the scan to the value half mirrors the B3 hasSampleTag fix and
-// prevents `C66-STACK=permanent-disabled` from pinning a resource forever.
-func tagValueContains(tags []string, marker string) bool {
-	for _, tag := range tags {
-		i := strings.IndexByte(tag, '=')
-		if i < 0 {
-			// no "=" — treat the whole tag as a value (bare label).
-			if strings.Contains(strings.ToLower(tag), marker) {
-				return true
-			}
-			continue
-		}
-		// scan only the value portion, never the key.
-		if strings.Contains(strings.ToLower(tag[i+1:]), marker) {
+// nameTokens splits a resource name on the common identifier delimiters
+// (-, _, ., whitespace) and lowercases each token. used for word-boundary
+// matching so `alongside-prod` does not register as containing "long" and
+// `prolonged-task` does not match either, while `my-long-running-job` still
+// does. addresses panel finding C7 (B4 substring false positives).
+func nameTokens(name string) []string {
+	if name == "" {
+		return nil
+	}
+	lower := strings.ToLower(name)
+	return strings.FieldsFunc(lower, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || r == ' ' || r == '\t'
+	})
+}
+
+// nameMatchesToken returns true when any delimiter-split token of name equals
+// marker (already lowercase). word-boundary semantics — see nameTokens.
+func nameMatchesToken(name, marker string) bool {
+	for _, tok := range nameTokens(name) {
+		if tok == marker {
 			return true
 		}
 	}
 	return false
 }
 
-// isPermanent returns true when the resource name or any tag VALUE contains
-// the permanent marker. tag KEYS are excluded so a key like
-// `C66-PERMANENT-OVERRIDE=false` does not pin the resource.
-func isPermanent(name string, tags []string) bool {
-	if strings.Contains(strings.ToLower(name), core.TagPermanent) {
-		return true
+// tagValueMatchesToken returns true when any tag is `key=value` and any
+// delimiter-split token of value equals marker. word-boundary semantics on
+// the value mirror nameTokens so `lifecycle=long-running` matches "long" but
+// `lifecycle=prolonged-window` does not. require explicit `key=value` form:
+// bare tags are not allowed to pin resources (panel C3 availability attack).
+func tagValueMatchesToken(tags []string, marker string) bool {
+	for _, tag := range tags {
+		i := strings.IndexByte(tag, '=')
+		if i < 0 {
+			// no "=" — bare tags do NOT pin (panel C3).
+			continue
+		}
+		if nameMatchesToken(tag[i+1:], marker) {
+			return true
+		}
 	}
-	return tagValueContains(tags, core.TagPermanent)
+	return false
 }
 
-// hasLongName returns true when the resource name or any tag VALUE contains
-// the long marker. tag KEYS are excluded for symmetry with isPermanent.
-func hasLongName(name string, tags []string) bool {
-	if strings.Contains(strings.ToLower(name), core.TagLong) {
+// isPermanent returns true when any name token equals "permanent" or any tag
+// value equals "permanent" (key=value form). symmetric with hasSampleTag.
+func isPermanent(name string, tags []string) bool {
+	if nameMatchesToken(name, core.TagPermanent) {
 		return true
 	}
-	return tagValueContains(tags, core.TagLong)
+	return tagValueMatchesToken(tags, core.TagPermanent)
+}
+
+// hasLongName returns true when any name token equals "long" or any tag value
+// equals "long". symmetric with isPermanent and hasSampleTag.
+func hasLongName(name string, tags []string) bool {
+	if nameMatchesToken(name, core.TagLong) {
+		return true
+	}
+	return tagValueMatchesToken(tags, core.TagLong)
+}
+
+// stripInvisibleAndSpace removes ASCII whitespace AND the common zero-width
+// Unicode characters that an attacker could insert to evade the sample-tag
+// check (panel finding C3). U+200B/C/D and BOM are the only realistic
+// vectors via tag UIs that round-trip Unicode untouched.
+func stripInvisibleAndSpace(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\u200B', '\u200C', '\u200D', '\uFEFF':
+			return -1
+		case ' ', '\t', '\n', '\r':
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // hasSampleTag checks if any tag has key core.TagKeyC66Stack with a value
 // containing the sample marker. vultr tags are flat strings in key=value
-// format (e.g. "C66-STACK=maestro-sample-prd").
+// format (e.g. "C66-STACK=maestro-sample-prd"). zero-width characters in the
+// key are stripped before comparison so they cannot be used to evade the
+// sample-skip safety net.
 func hasSampleTag(tags []string) bool {
-	// lower-cased key we compare against; computed once.
 	wantKey := strings.ToLower(core.TagKeyC66Stack)
 	for _, tag := range tags {
-		// split on the first "=" to isolate key from value
 		i := strings.IndexByte(tag, '=')
 		if i < 0 {
-			// no "=" → not a key=value tag, skip
 			continue
 		}
-		// trim whitespace on the key and lower-case for case-insensitive compare
-		key := strings.TrimSpace(strings.ToLower(tag[:i]))
+		// strip zero-width + whitespace before lower-casing key.
+		key := strings.ToLower(stripInvisibleAndSpace(tag[:i]))
 		if key != wantKey {
 			continue
 		}
-		// scan ONLY the value portion for the sample marker (case insensitive)
 		val := strings.ToLower(tag[i+1:])
 		if strings.Contains(val, core.TagSample) {
 			return true
@@ -359,6 +405,11 @@ func deleteLoadBalancers(ctx context.Context, loadBalancers []core.LoadBalancer)
 		if isPermanent(loadBalancer.Name, loadBalancer.Tags) {
 			printLoadBalancer(loadBalancer, "PERM")
 			_, _ = fmt.Fprintf(out, "skipped (permanent)\n")
+		} else if loadBalancer.Age <= 0 {
+			// defense-in-depth: zero/negative age means Created was missing or
+			// malformed upstream; never let predicates drive deletion off it.
+			printLoadBalancer(loadBalancer, "WARN")
+			_, _ = fmt.Fprintf(out, "skipped (unknown age — malformed Created)\n")
 		} else if loadBalancer.InstanceCount < 0 {
 			// instance count unknown (health check failed) — skip to be safe
 			printLoadBalancer(loadBalancer, " N/A")
@@ -421,6 +472,13 @@ func deleteVolumes(ctx context.Context, volumes []core.Volume) {
 		printVolume(volume)
 		if isPermanent(volume.Name, volume.Tags) {
 			_, _ = fmt.Fprintf(out, "skipped (permanent)\n")
+		} else if hasSampleTag(volume.Tags) {
+			// sample-stack volumes must be spared along with their owning
+			// servers (panel finding A#8).
+			_, _ = fmt.Fprintf(out, "skipped (sample tag)\n")
+		} else if volume.Age <= 0 {
+			// defense-in-depth: malformed/missing Created → skip.
+			_, _ = fmt.Fprintf(out, "skipped (unknown age — malformed Created)\n")
 		} else if volume.Attached {
 			// skip volumes that are attached to an instance
 			_, _ = fmt.Fprintf(out, "skipped (attached to instance)\n")

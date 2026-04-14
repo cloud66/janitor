@@ -21,9 +21,15 @@ type fakeExecutor struct {
 func (f *fakeExecutor) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
 	return nil, core.ErrUnsupported
 }
-func (f *fakeExecutor) ServerDelete(ctx context.Context, s core.Server) error { return core.ErrUnsupported }
-func (f *fakeExecutor) ServerStop(ctx context.Context, s core.Server) error   { return core.ErrUnsupported }
-func (f *fakeExecutor) ServerStart(ctx context.Context, s core.Server) error  { return core.ErrUnsupported }
+func (f *fakeExecutor) ServerDelete(ctx context.Context, s core.Server) error {
+	return core.ErrUnsupported
+}
+func (f *fakeExecutor) ServerStop(ctx context.Context, s core.Server) error {
+	return core.ErrUnsupported
+}
+func (f *fakeExecutor) ServerStart(ctx context.Context, s core.Server) error {
+	return core.ErrUnsupported
+}
 func (f *fakeExecutor) LoadBalancersGet(ctx context.Context, mock bool) ([]core.LoadBalancer, error) {
 	return nil, core.ErrUnsupported
 }

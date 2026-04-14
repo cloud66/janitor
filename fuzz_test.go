@@ -95,8 +95,9 @@ func FuzzHasSampleTag(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, tag string) {
-		// single-tag fuzzing is sufficient — hasSampleTag is a per-tag OR
-		tags := []string{tag}
+		// split on NUL to get a multi-tag input — exercises the per-tag OR
+		// loop, not just single-tag short-circuit. addresses panel C10.
+		tags := strings.Split(tag, "\x00")
 		got := hasSampleTag(tags)
 		want := referenceHasSampleTag(tags)
 		if got != want {
