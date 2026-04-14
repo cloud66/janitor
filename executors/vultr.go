@@ -9,10 +9,12 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Vultr encapsulates all Vultr cloud calls
-type Vultr struct {
-	*core.Executor
-}
+// Vultr encapsulates all Vultr cloud calls. Implements core.ExecutorInterface
+// directly (no embedded base) for compile-time coverage.
+type Vultr struct{}
+
+// compile-time interface assertion
+var _ core.ExecutorInterface = Vultr{}
 
 // ServersGet returns all Vultr instances
 func (v Vultr) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
@@ -21,7 +23,7 @@ func (v Vultr) ServersGet(ctx context.Context, vendorIDs []string, regions []str
 	var allInstances []govultr.Instance
 	opts := &govultr.ListOptions{PerPage: 100}
 
-	// paginate through all instances
+	// paginate through all instances using cursor-based meta.Links.Next
 	for {
 		instances, meta, _, err := client.Instance.List(ctx, opts)
 		if err != nil {
@@ -30,8 +32,8 @@ func (v Vultr) ServersGet(ctx context.Context, vendorIDs []string, regions []str
 
 		allInstances = append(allInstances, instances...)
 
-		// break when no more pages
-		if meta.Links.Next == "" {
+		// break when no more pages; meta may be nil on some error paths
+		if meta == nil || meta.Links == nil || meta.Links.Next == "" {
 			break
 		}
 		opts.Cursor = meta.Links.Next
@@ -39,12 +41,17 @@ func (v Vultr) ServersGet(ctx context.Context, vendorIDs []string, regions []str
 
 	result := make([]core.Server, 0, len(allInstances))
 	for _, inst := range allInstances {
-		// parse creation time and calculate age in days
-		createdAt, err := time.Parse(time.RFC3339, inst.DateCreated)
-		if err != nil {
-			return nil, err
+		// parse creation time; on parse failure log WARN and include with
+		// Age=0 rather than aborting the whole listing (B10).
+		var age float64
+		if inst.DateCreated != "" {
+			createdAt, err := time.Parse(time.RFC3339, inst.DateCreated)
+			if err != nil {
+				core.Warnf(ctx, "unparseable DateCreated %q for instance %q", inst.DateCreated, inst.Label)
+			} else {
+				age = time.Now().Sub(createdAt).Hours() / 24.0
+			}
 		}
-		age := time.Now().Sub(createdAt).Hours() / 24.0
 
 		result = append(result, core.Server{
 			VendorID: inst.ID,
@@ -66,6 +73,16 @@ func (v Vultr) ServerDelete(ctx context.Context, server core.Server) error {
 	return client.Instance.Delete(ctx, server.VendorID)
 }
 
+// ServerStop is unsupported on Vultr
+func (v Vultr) ServerStop(ctx context.Context, server core.Server) error {
+	return core.ErrUnsupported
+}
+
+// ServerStart is unsupported on Vultr
+func (v Vultr) ServerStart(ctx context.Context, server core.Server) error {
+	return core.ErrUnsupported
+}
+
 // LoadBalancersGet returns all Vultr load balancers with accurate instance counts
 func (v Vultr) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBalancer, error) {
 	client := v.client(ctx)
@@ -82,8 +99,7 @@ func (v Vultr) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.Load
 
 		allLBs = append(allLBs, lbs...)
 
-		// break when no more pages
-		if meta.Links.Next == "" {
+		if meta == nil || meta.Links == nil || meta.Links.Next == "" {
 			break
 		}
 		opts.Cursor = meta.Links.Next
@@ -91,12 +107,15 @@ func (v Vultr) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.Load
 
 	result := make([]core.LoadBalancer, 0, len(allLBs))
 	for _, lb := range allLBs {
-		// parse creation time and calculate age in days
-		createdAt, err := time.Parse(time.RFC3339, lb.DateCreated)
-		if err != nil {
-			return nil, err
+		var age float64
+		if lb.DateCreated != "" {
+			createdAt, err := time.Parse(time.RFC3339, lb.DateCreated)
+			if err != nil {
+				core.Warnf(ctx, "unparseable DateCreated %q for load balancer %q", lb.DateCreated, lb.Label)
+			} else {
+				age = time.Now().Sub(createdAt).Hours() / 24.0
+			}
 		}
-		age := time.Now().Sub(createdAt).Hours() / 24.0
 
 		result = append(result, core.LoadBalancer{
 			Name:            lb.Label,
@@ -118,6 +137,16 @@ func (v Vultr) LoadBalancerDelete(ctx context.Context, loadBalancer core.LoadBal
 	return client.LoadBalancer.Delete(ctx, loadBalancer.LoadBalancerArn)
 }
 
+// SshKeysGet is unsupported on Vultr today
+func (v Vultr) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
+	return nil, core.ErrUnsupported
+}
+
+// SshKeyDelete is unsupported on Vultr today
+func (v Vultr) SshKeyDelete(ctx context.Context, sshKey core.SshKey) error {
+	return core.ErrUnsupported
+}
+
 // VolumesGet returns all Vultr block storage volumes with attachment status
 func (v Vultr) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 	client := v.client(ctx)
@@ -134,8 +163,7 @@ func (v Vultr) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 
 		allVolumes = append(allVolumes, volumes...)
 
-		// break when no more pages
-		if meta.Links.Next == "" {
+		if meta == nil || meta.Links == nil || meta.Links.Next == "" {
 			break
 		}
 		opts.Cursor = meta.Links.Next
@@ -143,19 +171,23 @@ func (v Vultr) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 
 	result := make([]core.Volume, 0, len(allVolumes))
 	for _, vol := range allVolumes {
-		// parse creation time and calculate age in days
-		createdAt, err := time.Parse(time.RFC3339, vol.DateCreated)
-		if err != nil {
-			return nil, err
+		var age float64
+		if vol.DateCreated != "" {
+			createdAt, err := time.Parse(time.RFC3339, vol.DateCreated)
+			if err != nil {
+				core.Warnf(ctx, "unparseable DateCreated %q for block storage %q", vol.DateCreated, vol.Label)
+			} else {
+				age = time.Now().Sub(createdAt).Hours() / 24.0
+			}
 		}
-		age := time.Now().Sub(createdAt).Hours() / 24.0
 
+		// note: Vultr block storage has no tags concept, so Tags is always nil.
 		result = append(result, core.Volume{
 			VendorID: vol.ID,
 			Name:     vol.Label,
 			Age:      age,
 			Region:   vol.Region,
-			Attached: vol.AttachedToInstance != "", // true if attached to any instance
+			Attached: vol.AttachedToInstance != "",
 		})
 	}
 
@@ -168,13 +200,18 @@ func (v Vultr) VolumeDelete(ctx context.Context, volume core.Volume) error {
 	return client.BlockStorage.Delete(ctx, volume.VendorID)
 }
 
-// client creates an authenticated Vultr API client
-func (v *Vultr) client(ctx context.Context) *govultr.Client {
-	apiKey := ctx.Value("JANITOR_VULTR_PAT").(string)
+// client creates an authenticated Vultr API client. Credentials come from
+// typed ctx key core.VultrPatKey. For tests, core.VultrBaseURLKey redirects
+// the SDK to an httptest server via SetBaseURL.
+func (v Vultr) client(ctx context.Context) *govultr.Client {
+	apiKey, _ := ctx.Value(core.VultrPatKey).(string)
 	// reuse the same oauth2 token pattern as DigitalOcean
-	tokenSource := &TokenSource{
-		AccessToken: apiKey,
-	}
+	tokenSource := &TokenSource{AccessToken: apiKey}
 	oauthClient := oauth2.NewClient(ctx, tokenSource)
-	return govultr.NewClient(oauthClient)
+	client := govultr.NewClient(oauthClient)
+	if base, ok := ctx.Value(core.VultrBaseURLKey).(string); ok && base != "" {
+		// SetBaseURL validates the URL; ignore its error and keep default on failure.
+		_ = client.SetBaseURL(base)
+	}
+	return client
 }

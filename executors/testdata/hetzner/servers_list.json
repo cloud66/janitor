@@ -1,0 +1,13 @@
+{
+  "servers": [
+    {
+      "id": 42,
+      "name": "srv-a",
+      "status": "running",
+      "created": "2024-01-01T00:00:00+00:00",
+      "datacenter": {"id": 1, "name": "fsn1-dc14", "description": "", "location": {"id":1,"name":"fsn1","description":"","country":"DE","city":"Falkenstein","latitude":0,"longitude":0,"network_zone":"eu-central"}, "server_types": {"supported":[],"available":[],"available_for_migration":[]}},
+      "labels": {"env": "prod", "team": "core"}
+    }
+  ],
+  "meta": {"pagination": {"page": 1, "per_page": 25, "previous_page": null, "next_page": null, "last_page": 1, "total_entries": 1}}
+}

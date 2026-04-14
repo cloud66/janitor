@@ -1,0 +1,7 @@
+{
+  "load_balancers": [
+    {"id": "lb-v-1", "label": "vultr-lb-active", "date_created": "2024-01-01T00:00:00+00:00", "region": "ewr", "instances": ["i-1", "i-2"]},
+    {"id": "lb-v-2", "label": "vultr-lb-empty", "date_created": "2024-01-01T00:00:00+00:00", "region": "ewr", "instances": null}
+  ],
+  "meta": {"total": 2, "links": {"next": "", "prev": ""}}
+}

@@ -17,64 +17,170 @@ import (
 	"github.com/cloud66/janitor/core"
 )
 
-// Aws encapsulates all AWS cloud calls
+// ec2Client is the subset of the EC2 API used by janitor.
+// keeping it narrow lets tests inject fakes without wrapping the whole SDK.
+type ec2Client interface {
+	DescribeInstances(ctx context.Context, in *ec2.DescribeInstancesInput, opts ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	ModifyInstanceAttribute(ctx context.Context, in *ec2.ModifyInstanceAttributeInput, opts ...func(*ec2.Options)) (*ec2.ModifyInstanceAttributeOutput, error)
+	TerminateInstances(ctx context.Context, in *ec2.TerminateInstancesInput, opts ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+}
+
+// elbClient is the subset of the classic ELB API used by janitor.
+type elbClient interface {
+	DescribeLoadBalancers(ctx context.Context, in *elasticloadbalancing.DescribeLoadBalancersInput, opts ...func(*elasticloadbalancing.Options)) (*elasticloadbalancing.DescribeLoadBalancersOutput, error)
+	DeleteLoadBalancer(ctx context.Context, in *elasticloadbalancing.DeleteLoadBalancerInput, opts ...func(*elasticloadbalancing.Options)) (*elasticloadbalancing.DeleteLoadBalancerOutput, error)
+}
+
+// albClient is the subset of the ELBv2 (ALB/NLB) API used by janitor.
+type albClient interface {
+	DescribeLoadBalancers(ctx context.Context, in *elasticloadbalancingv2.DescribeLoadBalancersInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeLoadBalancersOutput, error)
+	DescribeTags(ctx context.Context, in *elasticloadbalancingv2.DescribeTagsInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeTagsOutput, error)
+	DescribeListeners(ctx context.Context, in *elasticloadbalancingv2.DescribeListenersInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeListenersOutput, error)
+	DescribeTargetGroups(ctx context.Context, in *elasticloadbalancingv2.DescribeTargetGroupsInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeTargetGroupsOutput, error)
+	DescribeTargetHealth(ctx context.Context, in *elasticloadbalancingv2.DescribeTargetHealthInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeTargetHealthOutput, error)
+	AddTags(ctx context.Context, in *elasticloadbalancingv2.AddTagsInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.AddTagsOutput, error)
+	RemoveTags(ctx context.Context, in *elasticloadbalancingv2.RemoveTagsInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.RemoveTagsOutput, error)
+	DeleteListener(ctx context.Context, in *elasticloadbalancingv2.DeleteListenerInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DeleteListenerOutput, error)
+	DeleteTargetGroup(ctx context.Context, in *elasticloadbalancingv2.DeleteTargetGroupInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DeleteTargetGroupOutput, error)
+	DeleteLoadBalancer(ctx context.Context, in *elasticloadbalancingv2.DeleteLoadBalancerInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DeleteLoadBalancerOutput, error)
+}
+
+// Aws encapsulates all AWS cloud calls.
+// client factories are injectable so tests can substitute fakes.
 type Aws struct {
 	*core.Executor
+	// factories build per-region clients; production wires these to the SDK,
+	// tests replace them with in-memory fakes.
+	ec2Factory func(ctx context.Context, region string) ec2Client
+	elbFactory func(ctx context.Context, region string) elbClient
+	albFactory func(ctx context.Context, region string) albClient
+	// regionsOverride allows tests to shrink the region list.
+	regionsOverride []string
+}
+
+// ec2For returns an ec2Client for the given region, using the factory if set.
+func (a Aws) ec2For(ctx context.Context, region string) ec2Client {
+	if a.ec2Factory != nil {
+		return a.ec2Factory(ctx, region)
+	}
+	return a.ec2Client(ctx, region)
+}
+
+// elbFor returns an elbClient for the given region, using the factory if set.
+func (a Aws) elbFor(ctx context.Context, region string) elbClient {
+	if a.elbFactory != nil {
+		return a.elbFactory(ctx, region)
+	}
+	return a.elbClient(ctx, region)
+}
+
+// albFor returns an albClient for the given region, using the factory if set.
+func (a Aws) albFor(ctx context.Context, region string) albClient {
+	if a.albFactory != nil {
+		return a.albFactory(ctx, region)
+	}
+	return a.albClient(ctx, region)
+}
+
+// regions returns the regions to iterate, honoring a test override.
+func (a Aws) regions() []string {
+	if a.regionsOverride != nil {
+		return a.regionsOverride
+	}
+	return a.allRegions()
 }
 
 // ServersGet return all servers in account
 func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
 	results := make([]core.Server, 0, 0)
 	if regions == nil {
-		// get from here: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.RegionsAndAvailabilityZones.html
-		regions = a.allRegions()
+		regions = a.regions()
 	}
+	// collect per-region errors so we surface "all regions failed" rather than
+	// silently returning (nil, nil) like the old code did (B6).
+	var regionErrs []error
+	okCount := 0
 	for _, region := range regions {
-		ec2Client := a.ec2Client(ctx, region)
-		describeInstancesOutput, err := ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{})
-		if err != nil {
-			continue
-		}
-		//resp has the response data, pull out instance IDs:
-		for _, reservation := range describeInstancesOutput.Reservations {
-			// fmt.Println(resp)
-			for _, instance := range reservation.Instances {
-				vendorID := *instance.InstanceId
-				if vendorIDs != nil {
-					found := false
-					for _, desiredVendor := range vendorIDs {
-						if vendorID == desiredVendor {
-							found = true
-							break
-						}
-					}
-					if !found {
-						//not one of our desired ids
+		client := a.ec2For(ctx, region)
+		// paginate over DescribeInstances via NextToken (B8).
+		var nextToken *string
+		regionOK := true
+		for {
+			out, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{NextToken: nextToken})
+			if err != nil {
+				regionErrs = append(regionErrs, fmt.Errorf("%s: %w", region, err))
+				regionOK = false
+				break
+			}
+			for _, reservation := range out.Reservations {
+				for _, instance := range reservation.Instances {
+					// guard: InstanceId may be nil on malformed responses (B7/nil-ptr).
+					if instance.InstanceId == nil {
+						fmt.Fprintf(out_sink(), "[WARN] skipping instance with nil InstanceId in %s\n", region)
 						continue
 					}
-				}
+					vendorID := *instance.InstanceId
+					if vendorIDs != nil {
+						found := false
+						for _, desiredVendor := range vendorIDs {
+							if vendorID == desiredVendor {
+								found = true
+								break
+							}
+						}
+						if !found {
+							continue
+						}
+					}
 
-				if len(instance.BlockDeviceMappings) == 0 {
-					continue
-				}
+					if len(instance.BlockDeviceMappings) == 0 {
+						continue
+					}
+					// guard: Ebs or AttachTime may be nil; skip rather than panic.
+					if instance.BlockDeviceMappings[0].Ebs == nil || instance.BlockDeviceMappings[0].Ebs.AttachTime == nil {
+						fmt.Fprintf(out_sink(), "[WARN] skipping instance %s: nil Ebs/AttachTime\n", vendorID)
+						continue
+					}
 
-				attachTime := *instance.BlockDeviceMappings[0].Ebs.AttachTime
-				age := time.Now().Sub(attachTime).Hours() / 24.0
-				name := vendorID
-				for _, tag := range instance.Tags {
-					if *tag.Key == "Name" {
-						name = *tag.Value
+					attachTime := *instance.BlockDeviceMappings[0].Ebs.AttachTime
+					age := time.Since(attachTime).Hours() / 24.0
+					name := vendorID
+					for _, tag := range instance.Tags {
+						// guard: tag Key/Value pointers may be nil.
+						if tag.Key == nil || tag.Value == nil {
+							continue
+						}
+						if *tag.Key == "Name" {
+							name = *tag.Value
+						}
+					}
+
+					// guard: State may be nil on some malformed responses.
+					if instance.State == nil {
+						fmt.Fprintf(out_sink(), "[WARN] skipping instance %s: nil State\n", vendorID)
+						continue
+					}
+					if instance.State.Name != "terminated" && instance.State.Name != "shutting-down" {
+						state := "RUNNING"
+						tags := awsTagsToStrings(instance.Tags)
+						results = append(results, core.Server{VendorID: vendorID, Name: name, Age: age, Region: region, State: state, Tags: tags})
 					}
 				}
-
-				if instance.State.Name != "terminated" && instance.State.Name != "shutting-down" {
-					state := "RUNNING"
-					// normalize AWS key-value tags to "key=value" strings
-					tags := awsTagsToStrings(instance.Tags)
-					results = append(results, core.Server{VendorID: vendorID, Name: name, Age: age, Region: region, State: state, Tags: tags})
-				}
 			}
+			// NextToken-based pagination; nil or empty ends the loop.
+			if out.NextToken == nil || *out.NextToken == "" {
+				break
+			}
+			nextToken = out.NextToken
 		}
+		if regionOK {
+			okCount++
+		}
+	}
+	// if we had at least one region succeed, return partial results (best-effort).
+	// if every region failed, surface an aggregated error (B6).
+	if okCount == 0 && len(regionErrs) > 0 {
+		return nil, fmt.Errorf("all regions failed: %w", errors.Join(regionErrs...))
 	}
 	return results, nil
 }
@@ -82,16 +188,37 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 // LoadBalancersGet return all load balancers in account
 func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBalancer, error) {
 	results := make([]core.LoadBalancer, 0, 0)
-	for _, region := range a.allRegions() {
-		elbClient := a.elbClient(ctx, region)
-		elbOutput, err := elbClient.DescribeLoadBalancers(ctx, &elasticloadbalancing.DescribeLoadBalancersInput{})
-		if err == nil {
-			for idx := range elbOutput.LoadBalancerDescriptions {
-				loadBalancer := elbOutput.LoadBalancerDescriptions[idx]
-				age := time.Now().Sub(*loadBalancer.CreatedTime).Hours() / 24.0
+	// track per-region errors so all-fail surfaces as an error (B6).
+	var regionErrs []error
+	okCount := 0
+	for _, region := range a.regions() {
+		regionFailed := false
+		elb := a.elbFor(ctx, region)
+		// paginate classic ELB DescribeLoadBalancers via Marker (B8).
+		var elbMarker *string
+		elbHadErr := false
+		for {
+			elbOut, err := elb.DescribeLoadBalancers(ctx, &elasticloadbalancing.DescribeLoadBalancersInput{Marker: elbMarker})
+			if err != nil {
+				regionErrs = append(regionErrs, fmt.Errorf("%s elb: %w", region, err))
+				regionFailed = true
+				elbHadErr = true
+				break
+			}
+			for idx := range elbOut.LoadBalancerDescriptions {
+				loadBalancer := elbOut.LoadBalancerDescriptions[idx]
+				// guard: CreatedTime or LoadBalancerName may be nil.
+				if loadBalancer.CreatedTime == nil || loadBalancer.LoadBalancerName == nil {
+					fmt.Fprintf(out_sink(), "[WARN] skipping classic LB with nil CreatedTime/Name in %s\n", region)
+					continue
+				}
+				age := time.Since(*loadBalancer.CreatedTime).Hours() / 24.0
 				name := loadBalancer.LoadBalancerName
 				var vendorIDs []string
 				for _, instance := range loadBalancer.Instances {
+					if instance.InstanceId == nil {
+						continue
+					}
 					vendorIDs = append(vendorIDs, *instance.InstanceId)
 				}
 				servers, _ := a.ServersGet(ctx, vendorIDs, []string{region})
@@ -103,53 +230,98 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 				}
 				results = append(results, core.LoadBalancer{Name: *name, Age: age, InstanceCount: instanceCount, Region: region, Type: "elb"})
 			}
+			if elbOut.NextMarker == nil || *elbOut.NextMarker == "" {
+				break
+			}
+			elbMarker = elbOut.NextMarker
 		}
-		// elastic load balancing v2
-		albClient := a.albClient(ctx, region)
-		albOutput, err := albClient.DescribeLoadBalancers(ctx, &elasticloadbalancingv2.DescribeLoadBalancersInput{})
-		if err == nil {
-			for idx := range albOutput.LoadBalancers {
-				loadBalancer := albOutput.LoadBalancers[idx]
-				age := time.Now().Sub(*loadBalancer.CreatedTime).Hours() / 24.0
+		_ = elbHadErr
+
+		// elastic load balancing v2 (ALB/NLB)
+		alb := a.albFor(ctx, region)
+		// paginate DescribeLoadBalancers via Marker (B8).
+		var albMarker *string
+		for {
+			albOut, err := alb.DescribeLoadBalancers(ctx, &elasticloadbalancingv2.DescribeLoadBalancersInput{Marker: albMarker})
+			if err != nil {
+				regionErrs = append(regionErrs, fmt.Errorf("%s alb: %w", region, err))
+				regionFailed = true
+				break
+			}
+			for idx := range albOut.LoadBalancers {
+				loadBalancer := albOut.LoadBalancers[idx]
+				// guard against nil CreatedTime / ARN / Name.
+				if loadBalancer.CreatedTime == nil || loadBalancer.LoadBalancerArn == nil || loadBalancer.LoadBalancerName == nil {
+					fmt.Fprintf(out_sink(), "[WARN] skipping ALB with nil CreatedTime/ARN/Name in %s\n", region)
+					continue
+				}
+				age := time.Since(*loadBalancer.CreatedTime).Hours() / 24.0
 				name := loadBalancer.LoadBalancerName
 				loadBalancerArn := loadBalancer.LoadBalancerArn
 
 				var lbTags []string
-				tagsOutput, err := albClient.DescribeTags(ctx, &elasticloadbalancingv2.DescribeTagsInput{ResourceArns: []string{*loadBalancerArn}})
+				tagsOutput, err := alb.DescribeTags(ctx, &elasticloadbalancingv2.DescribeTagsInput{ResourceArns: []string{*loadBalancerArn}})
 				if err == nil {
 					for _, tagDescription := range tagsOutput.TagDescriptions {
-						// normalize all ALB tags to "key=value" strings
 						lbTags = awsAlbTagsToStrings(tagDescription.Tags)
 						for _, tag := range tagDescription.Tags {
-							if *tag.Key == "C66-STACK" {
+							if tag.Key == nil {
+								continue
+							}
+							if *tag.Key == "C66-STACK" && tag.Value != nil {
 								name = tag.Value
 							}
 						}
 					}
 				}
 
+				// paginate DescribeListeners (B8).
 				var listenerArns []string
-				listenerOutput, err := albClient.DescribeListeners(ctx, &elasticloadbalancingv2.DescribeListenersInput{LoadBalancerArn: loadBalancerArn})
-				if err == nil {
+				var lstMarker *string
+				for {
+					listenerOutput, err := alb.DescribeListeners(ctx, &elasticloadbalancingv2.DescribeListenersInput{LoadBalancerArn: loadBalancerArn, Marker: lstMarker})
+					if err != nil {
+						break
+					}
 					for _, listener := range listenerOutput.Listeners {
+						if listener.ListenerArn == nil {
+							continue
+						}
 						listenerArns = append(listenerArns, *listener.ListenerArn)
 					}
-				}
-				var targetGroupArns []string
-				targetGroupOutput, err := albClient.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{LoadBalancerArn: loadBalancerArn})
-				if err == nil {
-					for _, targetGroup := range targetGroupOutput.TargetGroups {
-						targetGroupArns = append(targetGroupArns, *targetGroup.TargetGroupArn)
+					if listenerOutput.NextMarker == nil || *listenerOutput.NextMarker == "" {
+						break
 					}
+					lstMarker = listenerOutput.NextMarker
 				}
 
-				// count unique instances across all target groups
-				// if any health check fails, assume instances exist to prevent accidental deletion
+				// paginate per-LB DescribeTargetGroups (B8).
+				var targetGroupArns []string
+				var tgMarker *string
+				for {
+					targetGroupOutput, err := alb.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{LoadBalancerArn: loadBalancerArn, Marker: tgMarker})
+					if err != nil {
+						break
+					}
+					for _, targetGroup := range targetGroupOutput.TargetGroups {
+						if targetGroup.TargetGroupArn == nil {
+							continue
+						}
+						targetGroupArns = append(targetGroupArns, *targetGroup.TargetGroupArn)
+					}
+					if targetGroupOutput.NextMarker == nil || *targetGroupOutput.NextMarker == "" {
+						break
+					}
+					tgMarker = targetGroupOutput.NextMarker
+				}
+
+				// count unique instances across all target groups; on error, assume
+				// instances exist to avoid accidental deletion.
 				seenInstances := make(map[string]bool)
 				healthCheckFailed := false
 				for _, tgArn := range targetGroupArns {
 					tgArnCopy := tgArn
-					healthOutput, err := albClient.DescribeTargetHealth(ctx, &elasticloadbalancingv2.DescribeTargetHealthInput{
+					healthOutput, err := alb.DescribeTargetHealth(ctx, &elasticloadbalancingv2.DescribeTargetHealthInput{
 						TargetGroupArn: &tgArnCopy,
 					})
 					if err != nil {
@@ -164,7 +336,6 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 				}
 				instanceCount := len(seenInstances)
 				if healthCheckFailed {
-					// treat unknown as "has instances" so we don't delete an LB we can't verify
 					instanceCount = -1
 				}
 				results = append(results, core.LoadBalancer{
@@ -179,68 +350,95 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					TargetGroupArns: targetGroupArns,
 				})
 			}
+			if albOut.NextMarker == nil || *albOut.NextMarker == "" {
+				break
+			}
+			albMarker = albOut.NextMarker
 		}
 
-		// find orphaned target groups
-		targetGroupOutput, err := albClient.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{})
-		if err == nil {
+		// find orphaned target groups — paginate DescribeTargetGroups (B8).
+		// the paginated loop ensures a TG whose owning LB appears on page 2 is
+		// not falsely flagged as orphan.
+		var orphanMarker *string
+		for {
+			targetGroupOutput, err := alb.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{Marker: orphanMarker})
+			if err != nil {
+				break
+			}
 			markedForDeletionTagKey := "JANITOR.MARKED.TO.DELETE"
 			for _, targetGroup := range targetGroupOutput.TargetGroups {
-				// check if this target group is associated with any LB
+				if targetGroup.TargetGroupArn == nil {
+					continue
+				}
+				// TG has an owning LB: clear any previous mark (two-phase race fix).
 				if len(targetGroup.LoadBalancerArns) > 0 {
 					if !flagMock {
-						albClient.RemoveTags(ctx, &elasticloadbalancingv2.RemoveTagsInput{
+						alb.RemoveTags(ctx, &elasticloadbalancingv2.RemoveTagsInput{
 							ResourceArns: []string{*targetGroup.TargetGroupArn},
 							TagKeys:      []string{markedForDeletionTagKey},
 						})
 					}
 				} else {
 					foundMarkedForDeletionTag := false
-					tagsOutput, err := albClient.DescribeTags(ctx, &elasticloadbalancingv2.DescribeTagsInput{ResourceArns: []string{*targetGroup.TargetGroupArn}})
+					tagsOutput, err := alb.DescribeTags(ctx, &elasticloadbalancingv2.DescribeTagsInput{ResourceArns: []string{*targetGroup.TargetGroupArn}})
 					if err == nil {
 						for _, tagDescription := range tagsOutput.TagDescriptions {
 							for _, tag := range tagDescription.Tags {
+								if tag.Key == nil {
+									continue
+								}
 								if *tag.Key == markedForDeletionTagKey {
-									// we previously marked this for deletion, this means now we should actually remove it!
 									foundMarkedForDeletionTag = true
 								}
 							}
 						}
 					}
 					if foundMarkedForDeletionTag {
-						// we should delete this!
 						prettyPrint(fmt.Sprintf("[%s] ▶ Orphaned Target Group: DELETING\n", *targetGroup.TargetGroupArn), flagMock)
 						if !flagMock {
-							_, err := albClient.DeleteTargetGroup(ctx, &elasticloadbalancingv2.DeleteTargetGroupInput{TargetGroupArn: targetGroup.TargetGroupArn})
+							_, err := alb.DeleteTargetGroup(ctx, &elasticloadbalancingv2.DeleteTargetGroupInput{TargetGroupArn: targetGroup.TargetGroupArn})
 							if err != nil {
 								return nil, err
 							}
 						}
-
 					} else {
-						// add the foundMarkedForDeletionTag
 						prettyPrint(fmt.Sprintf("[%s] ▶ Orphaned Target Group: SETTING TAG\n", *targetGroup.TargetGroupArn), flagMock)
 						if !flagMock {
 							trueString := "true"
-							_, err = albClient.AddTags(ctx, &elasticloadbalancingv2.AddTagsInput{
+							// check AddTags error (B7): if tagging failed, do NOT mark
+							// the TG as deletion-eligible on a future run.
+							_, addErr := alb.AddTags(ctx, &elasticloadbalancingv2.AddTagsInput{
 								ResourceArns: []string{*targetGroup.TargetGroupArn},
-								Tags:         []elasticloadbalancingv2types.Tag{elasticloadbalancingv2types.Tag{Key: &markedForDeletionTagKey, Value: &trueString}},
+								Tags:         []elasticloadbalancingv2types.Tag{{Key: &markedForDeletionTagKey, Value: &trueString}},
 							})
+							if addErr != nil {
+								fmt.Fprintf(out_sink(), "[WARN] AddTags failed for %s: %s\n", *targetGroup.TargetGroupArn, addErr.Error())
+							}
 						}
-
 					}
 				}
 			}
+			if targetGroupOutput.NextMarker == nil || *targetGroupOutput.NextMarker == "" {
+				break
+			}
+			orphanMarker = targetGroupOutput.NextMarker
 		}
 
+		if !regionFailed {
+			okCount++
+		}
+	}
+	// aggregate errors if no region succeeded (B6).
+	if okCount == 0 && len(regionErrs) > 0 {
+		return nil, fmt.Errorf("all regions failed: %w", errors.Join(regionErrs...))
 	}
 	return results, nil
 }
 
 // ServerDelete remove the specified server
 func (a Aws) ServerDelete(ctx context.Context, server core.Server) error {
-	ec2Client := a.ec2Client(ctx, server.Region)
-	_, err := ec2Client.ModifyInstanceAttribute(ctx, &ec2.ModifyInstanceAttributeInput{
+	client := a.ec2For(ctx, server.Region)
+	_, err := client.ModifyInstanceAttribute(ctx, &ec2.ModifyInstanceAttributeInput{
 		InstanceId:            aws.String(server.VendorID),
 		DisableApiTermination: &ec2types.AttributeBooleanValue{Value: aws.Bool(false)},
 		DryRun:                aws.Bool(false),
@@ -248,7 +446,7 @@ func (a Aws) ServerDelete(ctx context.Context, server core.Server) error {
 	if err != nil {
 		return err
 	}
-	_, err = ec2Client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+	_, err = client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: []string{server.VendorID},
 		DryRun:      aws.Bool(false),
 	})
@@ -258,11 +456,13 @@ func (a Aws) ServerDelete(ctx context.Context, server core.Server) error {
 	return nil
 }
 
-// LoadBalancerDelete delete the load balancer
+// LoadBalancerDelete delete the load balancer.
+// ALB ordering (B5 fix): listeners → LB → target groups. AWS requires the LB
+// to be detached from TGs before a TG can be deleted.
 func (a Aws) LoadBalancerDelete(ctx context.Context, loadBalancer core.LoadBalancer) error {
 	if loadBalancer.Type == "elb" {
-		elbClient := a.elbClient(ctx, loadBalancer.Region)
-		_, err := elbClient.DeleteLoadBalancer(ctx, &elasticloadbalancing.DeleteLoadBalancerInput{
+		client := a.elbFor(ctx, loadBalancer.Region)
+		_, err := client.DeleteLoadBalancer(ctx, &elasticloadbalancing.DeleteLoadBalancerInput{
 			LoadBalancerName: aws.String(loadBalancer.Name),
 		})
 		if err != nil {
@@ -270,22 +470,27 @@ func (a Aws) LoadBalancerDelete(ctx context.Context, loadBalancer core.LoadBalan
 		}
 		return nil
 	} else if loadBalancer.Type == "alb" {
-		albClient := a.albClient(ctx, loadBalancer.Region)
+		client := a.albFor(ctx, loadBalancer.Region)
+		// step 1: delete listeners (detaches public endpoints from the LB).
 		for _, listenerArn := range loadBalancer.ListenerArns {
-			_, err := albClient.DeleteListener(ctx, &elasticloadbalancingv2.DeleteListenerInput{ListenerArn: &listenerArn})
+			la := listenerArn
+			_, err := client.DeleteListener(ctx, &elasticloadbalancingv2.DeleteListenerInput{ListenerArn: &la})
 			if err != nil {
 				return err
 			}
 		}
-		for _, targetGroupArn := range loadBalancer.TargetGroupArns {
-			_, err := albClient.DeleteTargetGroup(ctx, &elasticloadbalancingv2.DeleteTargetGroupInput{TargetGroupArn: &targetGroupArn})
-			if err != nil {
-				return err
-			}
-		}
-		_, err := albClient.DeleteLoadBalancer(ctx, &elasticloadbalancingv2.DeleteLoadBalancerInput{LoadBalancerArn: &loadBalancer.LoadBalancerArn})
+		// step 2: delete the load balancer itself — this detaches target groups.
+		_, err := client.DeleteLoadBalancer(ctx, &elasticloadbalancingv2.DeleteLoadBalancerInput{LoadBalancerArn: &loadBalancer.LoadBalancerArn})
 		if err != nil {
 			return err
+		}
+		// step 3: now safe to delete target groups (no longer in use).
+		for _, targetGroupArn := range loadBalancer.TargetGroupArns {
+			tg := targetGroupArn
+			_, err := client.DeleteTargetGroup(ctx, &elasticloadbalancingv2.DeleteTargetGroupInput{TargetGroupArn: &tg})
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -327,41 +532,14 @@ func (a Aws) credentials(ctx context.Context) *aws.CredentialsCache {
 }
 
 func (a Aws) allRegions() []string {
-	//return []string{"eu-west-2"}
 	return []string{
-		"af-south-1",
-		"ap-east-1",
-		"ap-northeast-1",
-		"ap-northeast-2",
-		"ap-northeast-3",
-		"ap-south-1",
-		"ap-southeast-1",
-		"ap-southeast-2",
-		"ap-southeast-3",
-		"ap-southeast-4",
-		"ap-southeast-5",
-		"ap-southeast-7",
-		"ca-central-1",
-		"ca-west-1",
-		"eu-central-1",
-		"eu-central-2",
-		"eu-north-1",
-		"eu-south-1",
-		"eu-south-2",
-		"eu-west-1",
-		"eu-west-2",
-		"eu-west-3",
-		"il-central-1",
-		"me-central-1",
-		"me-south-1",
-		"mx-central-1",
-		"sa-east-1",
-		"us-east-1",
-		"us-east-2",
-		"us-gov-east-1",
-		"us-gov-west-1",
-		"us-west-1",
-		"us-west-2",
+		"af-south-1", "ap-east-1", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
+		"ap-south-1", "ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ap-southeast-4",
+		"ap-southeast-5", "ap-southeast-7", "ca-central-1", "ca-west-1", "eu-central-1",
+		"eu-central-2", "eu-north-1", "eu-south-1", "eu-south-2", "eu-west-1",
+		"eu-west-2", "eu-west-3", "il-central-1", "me-central-1", "me-south-1",
+		"mx-central-1", "sa-east-1", "us-east-1", "us-east-2", "us-gov-east-1",
+		"us-gov-west-1", "us-west-1", "us-west-2",
 	}
 }
 
@@ -388,10 +566,12 @@ func awsAlbTagsToStrings(tags []elasticloadbalancingv2types.Tag) []string {
 }
 
 func prettyPrint(message string, mock bool) {
+	// route through the package-level out_sink so tests can capture output.
+	// TODO: replace with core.Warnf once Phase 4 lands it.
 	if mock == true {
-		fmt.Printf("[MOCK] %s", message)
+		fmt.Fprintf(out_sink(), "[MOCK] %s", message)
 	} else {
-		fmt.Printf("%s", message)
+		fmt.Fprintf(out_sink(), "%s", message)
 	}
 }
 

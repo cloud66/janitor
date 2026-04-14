@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -13,6 +14,10 @@ import (
 	"github.com/cloud66/janitor/executors"
 	"golang.org/x/net/context"
 )
+
+// out is the package-level sink for all user-visible output. Tests can swap
+// this to a bytes.Buffer via captureOutput to assert on printed skip reasons.
+var out io.Writer = os.Stdout
 
 const (
 	actionWebServer = "webserver"
@@ -43,10 +48,11 @@ var (
 )
 
 func prettyPrint(message string, mock bool) {
+	// route through the package-level out sink so tests can capture output
 	if mock == true {
-		fmt.Printf("[MOCK] %s", message)
+		fmt.Fprintf(out, "[MOCK] %s", message)
 	} else {
-		fmt.Printf("%s", message)
+		fmt.Fprintf(out, "%s", message)
 	}
 }
 
@@ -114,11 +120,19 @@ func main() {
 	clouds["hetzner"] = executors.Hetzner{}
 
 	ctx := context.Background()
-	ctx = context.WithValue(ctx, "JANITOR_DO_PAT", flagDOPat)
+	// typed keys for non-AWS executors (go vet SA1029 clean)
+	ctx = context.WithValue(ctx, core.DOPatKey, flagDOPat)
+	ctx = context.WithValue(ctx, core.VultrPatKey, flagVultrPat)
+	ctx = context.WithValue(ctx, core.HetznerPatKey, flagHetznerPat)
+	// AWS executor currently reads string-literal keys; leave alone until
+	// Phase 5 migrates it. Populate both so either style resolves.
 	ctx = context.WithValue(ctx, "JANITOR_AWS_ACCESS_KEY_ID", flagAWSAccessKeyID)
 	ctx = context.WithValue(ctx, "JANITOR_AWS_SECRET_ACCESS_KEY", flagAWSSecretAccessKey)
-	ctx = context.WithValue(ctx, "JANITOR_VULTR_PAT", flagVultrPat)
-	ctx = context.WithValue(ctx, "JANITOR_HETZNER_PAT", flagHetznerPat)
+	ctx = context.WithValue(ctx, core.AWSAccessKeyIDKey, flagAWSAccessKeyID)
+	ctx = context.WithValue(ctx, core.AWSSecretAccessKeyKey, flagAWSSecretAccessKey)
+	// surface executor warnings through the same `out` sink so tests and
+	// users see "[WARN] ..." lines alongside normal output.
+	ctx = context.WithValue(ctx, core.WarnWriterKey, out)
 
 	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
@@ -142,7 +156,7 @@ func main() {
 		}
 
 		executor := clouds[userCloud]
-		ctx = context.WithValue(ctx, "executor", executor)
+		ctx = context.WithValue(ctx, core.ExecutorKey, executor)
 
 		servers, err := executor.ServersGet(ctx, nil, nil)
 		if err != nil {
@@ -226,9 +240,20 @@ func hasLongName(name string, tags []string) bool {
 // vultr tags are flat strings in key=value format (e.g. "C66-STACK=maestro-sample-prd")
 func hasSampleTag(tags []string) bool {
 	for _, tag := range tags {
-		lower := strings.ToLower(tag)
-		// check for C66-STACK= prefix and "sample" in the value
-		if strings.HasPrefix(lower, "c66-stack=") && strings.Contains(lower, "sample") {
+		// split on the first "=" to isolate key from value
+		i := strings.IndexByte(tag, '=')
+		if i < 0 {
+			// no "=" → not a key=value tag, skip
+			continue
+		}
+		// trim whitespace on the key and lower-case for case-insensitive compare
+		key := strings.TrimSpace(strings.ToLower(tag[:i]))
+		if key != "c66-stack" {
+			continue
+		}
+		// scan ONLY the value portion for "sample" (case insensitive)
+		val := strings.ToLower(tag[i+1:])
+		if strings.Contains(val, "sample") {
 			return true
 		}
 	}
@@ -240,43 +265,43 @@ func deleteServers(ctx context.Context, cloud string, servers []core.Server) {
 		if cloud == "vultr" && hasSampleTag(server.Tags) {
 			// skip vultr servers with a C66-STACK tag containing "sample"
 			printServer(server, "SMPL")
-			fmt.Printf("skipped (sample tag)\n")
+			fmt.Fprintf(out, "skipped (sample tag)\n")
 		} else if isPermanent(server.Name, server.Tags) {
 			printServer(server, "PERM")
-			fmt.Printf("skipped (permanent)\n")
+			fmt.Fprintf(out, "skipped (permanent)\n")
 		} else if hasLongName(server.Name, server.Tags) {
 			printServer(server, "LONG")
 			if server.Age > flagMaxAgeLong {
 				if flagMock {
-					fmt.Printf("Mock deleted!\n")
+					fmt.Fprintf(out, "Mock deleted!\n")
 				} else {
 					deleteServer(ctx, server)
 				}
 			} else {
-				fmt.Printf("skipped (age)\n")
+				fmt.Fprintf(out, "skipped (age)\n")
 			}
 		} else {
 			printServer(server, "NORM")
 			if server.Age > flagMaxAgeNormal {
 				if flagMock {
-					fmt.Printf("Mock deleted!\n")
+					fmt.Fprintf(out, "Mock deleted!\n")
 				} else {
 					deleteServer(ctx, server)
 				}
 			} else {
-				fmt.Printf("skipped (age)\n")
+				fmt.Fprintf(out, "skipped (age)\n")
 			}
 		}
 	}
 }
 
 func deleteServer(ctx context.Context, server core.Server) {
-	executor := ctx.Value("executor").(core.ExecutorInterface)
+	executor := ctx.Value(core.ExecutorKey).(core.ExecutorInterface)
 	err := executor.ServerDelete(ctx, server)
 	if err != nil {
-		fmt.Printf("ERROR: %s\n", err.Error())
+		fmt.Fprintf(out, "ERROR: %s\n", err.Error())
 	} else {
-		fmt.Printf("Deleted!\n")
+		fmt.Fprintf(out, "Deleted!\n")
 	}
 }
 
@@ -287,24 +312,24 @@ func deleteLoadBalancers(ctx context.Context, loadBalancers []core.LoadBalancer)
 	for _, loadBalancer := range loadBalancers {
 		if isPermanent(loadBalancer.Name, loadBalancer.Tags) {
 			printLoadBalancer(loadBalancer, "PERM")
-			fmt.Printf("skipped (permanent)\n")
+			fmt.Fprintf(out, "skipped (permanent)\n")
 		} else if loadBalancer.InstanceCount < 0 {
 			// instance count unknown (health check failed) — skip to be safe
 			printLoadBalancer(loadBalancer, " N/A")
-			fmt.Printf("skipped (instance count unknown)\n")
+			fmt.Fprintf(out, "skipped (instance count unknown)\n")
 		} else if loadBalancer.InstanceCount > 0 {
 			// skip LBs that still have servers attached
 			printLoadBalancer(loadBalancer, "LIVE")
-			fmt.Printf("skipped (has %d instances)\n", loadBalancer.InstanceCount)
+			fmt.Fprintf(out, "skipped (has %d instances)\n", loadBalancer.InstanceCount)
 		} else if loadBalancer.Age < minAge {
 			// skip recently created LBs that may not have instances yet
 			printLoadBalancer(loadBalancer, " NEW")
-			fmt.Printf("skipped (less than 1 hour old)\n")
+			fmt.Fprintf(out, "skipped (less than 1 hour old)\n")
 		} else {
 			// no instances and older than 1 hour — delete it
 			printLoadBalancer(loadBalancer, "DEAD")
 			if flagMock {
-				fmt.Printf("Mock deleted!\n")
+				fmt.Fprintf(out, "Mock deleted!\n")
 			} else {
 				deleteLoadBalancer(ctx, loadBalancer)
 			}
@@ -323,22 +348,22 @@ func printLoadBalancer(loadBalancer core.LoadBalancer, state string) {
 }
 
 func deleteLoadBalancer(ctx context.Context, loadBalancer core.LoadBalancer) {
-	executor := ctx.Value("executor").(core.ExecutorInterface)
+	executor := ctx.Value(core.ExecutorKey).(core.ExecutorInterface)
 	err := executor.LoadBalancerDelete(ctx, loadBalancer)
 	if err != nil {
-		fmt.Printf("ERROR: %s\n", err.Error())
+		fmt.Fprintf(out, "ERROR: %s\n", err.Error())
 	} else {
-		fmt.Printf("Deleted!\n")
+		fmt.Fprintf(out, "Deleted!\n")
 	}
 }
 
 func deleteSshKey(ctx context.Context, sshKey core.SshKey) {
-	executor := ctx.Value("executor").(core.ExecutorInterface)
+	executor := ctx.Value(core.ExecutorKey).(core.ExecutorInterface)
 	err := executor.SshKeyDelete(ctx, sshKey)
 	if err != nil {
-		fmt.Printf("ERROR: %s\n", err.Error())
+		fmt.Fprintf(out, "ERROR: %s\n", err.Error())
 	} else {
-		fmt.Printf("Deleted!\n")
+		fmt.Fprintf(out, "Deleted!\n")
 	}
 }
 
@@ -349,16 +374,16 @@ func deleteVolumes(ctx context.Context, volumes []core.Volume) {
 	for _, volume := range volumes {
 		printVolume(volume)
 		if isPermanent(volume.Name, volume.Tags) {
-			fmt.Printf("skipped (permanent)\n")
+			fmt.Fprintf(out, "skipped (permanent)\n")
 		} else if volume.Attached {
 			// skip volumes that are attached to an instance
-			fmt.Printf("skipped (attached to instance)\n")
+			fmt.Fprintf(out, "skipped (attached to instance)\n")
 		} else if volume.Age < minAge {
 			// skip recently created volumes that may not have been attached yet
-			fmt.Printf("skipped (too new)\n")
+			fmt.Fprintf(out, "skipped (too new)\n")
 		} else {
 			if flagMock {
-				fmt.Printf("Mock deleted!\n")
+				fmt.Fprintf(out, "Mock deleted!\n")
 			} else {
 				deleteVolume(ctx, volume)
 			}
@@ -367,12 +392,12 @@ func deleteVolumes(ctx context.Context, volumes []core.Volume) {
 }
 
 func deleteVolume(ctx context.Context, volume core.Volume) {
-	executor := ctx.Value("executor").(core.ExecutorInterface)
+	executor := ctx.Value(core.ExecutorKey).(core.ExecutorInterface)
 	err := executor.VolumeDelete(ctx, volume)
 	if err != nil {
-		fmt.Printf("ERROR: %s\n", err.Error())
+		fmt.Fprintf(out, "ERROR: %s\n", err.Error())
 	} else {
-		fmt.Printf("Deleted!\n")
+		fmt.Fprintf(out, "Deleted!\n")
 	}
 }
 
@@ -399,15 +424,15 @@ func deleteSshKeys(ctx context.Context, sshKeys []core.SshKey) {
 			if (nonUserDefinedSshKeyCount - flagSshKeysKeepCount) > deletedSshKeys {
 				deletedSshKeys += 1
 				if flagMock {
-					fmt.Printf("Mock deleted!\n")
+					fmt.Fprintf(out, "Mock deleted!\n")
 				} else {
 					deleteSshKey(ctx, sshKey)
 				}
 			} else {
-				fmt.Printf("skipped (keep last %d)\n", flagSshKeysKeepCount)
+				fmt.Fprintf(out, "skipped (keep last %d)\n", flagSshKeysKeepCount)
 			}
 		} else {
-			fmt.Printf("skipped (name)\n")
+			fmt.Fprintf(out, "skipped (name)\n")
 		}
 	}
 }

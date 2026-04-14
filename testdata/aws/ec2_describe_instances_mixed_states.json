@@ -1,0 +1,30 @@
+{
+  "Reservations": [
+    {
+      "Instances": [
+        {
+          "InstanceId": "i-running",
+          "State": {"Name": "running"},
+          "BlockDeviceMappings": [
+            {"Ebs": {"AttachTime": "2024-01-01T00:00:00Z"}}
+          ],
+          "Tags": [{"Key": "Name", "Value": "webserver-1"}]
+        },
+        {
+          "InstanceId": "i-terminated",
+          "State": {"Name": "terminated"},
+          "BlockDeviceMappings": [
+            {"Ebs": {"AttachTime": "2024-01-01T00:00:00Z"}}
+          ]
+        },
+        {
+          "InstanceId": "i-nil-ebs",
+          "State": {"Name": "running"},
+          "BlockDeviceMappings": [
+            {"Ebs": null}
+          ]
+        }
+      ]
+    }
+  ]
+}

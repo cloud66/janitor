@@ -1,6 +1,7 @@
 package executors
 
 import (
+	"net/url"
 	"strconv"
 	"time"
 
@@ -15,29 +16,55 @@ type TokenSource struct {
 	AccessToken string
 }
 
-// DigitalOcean encapsulates all DO cloud calls
-type DigitalOcean struct {
-	*core.Executor
-}
+// DigitalOcean encapsulates all DO cloud calls. It implements
+// core.ExecutorInterface directly (no embedded base) so the compiler enforces
+// coverage of every interface method.
+type DigitalOcean struct{}
+
+// compile-time interface assertion
+var _ core.ExecutorInterface = DigitalOcean{}
 
 // ServersGet returns collection of Server objects
 func (d DigitalOcean) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
-	droplets, _, err := d.client(ctx).Droplets.List(ctx, &godo.ListOptions{})
-	if err != nil {
-		return nil, err
+	client := d.client(ctx)
+
+	// paginate through all droplets — matches the pattern used by SshKeysGet.
+	// fixes B11: previously a single unpaged List call silently truncated.
+	allDroplets := []godo.Droplet{}
+	opt := &godo.ListOptions{}
+	for {
+		droplets, resp, err := client.Droplets.List(ctx, opt)
+		if err != nil {
+			return nil, err
+		}
+		allDroplets = append(allDroplets, droplets...)
+
+		// stop at the last page
+		if resp == nil || resp.Links == nil || resp.Links.IsLastPage() {
+			break
+		}
+		page, err := resp.Links.CurrentPage()
+		if err != nil {
+			return nil, err
+		}
+		opt.Page = page + 1
 	}
 
-	result := make([]core.Server, 0, len(droplets))
-	for _, droplet := range droplets {
+	result := make([]core.Server, 0, len(allDroplets))
+	for _, droplet := range allDroplets {
 		createdAt := droplet.Created
+		// parse creation timestamp; on parse failure we fall back to Age=0 and
+		// log a warning rather than aborting the whole listing (B10).
+		var age float64
 		if createdAt != "" {
 			createdAtDate, err := time.Parse(time.RFC3339, createdAt)
 			if err != nil {
-				return nil, err
+				core.Warnf(ctx, "unparseable Created %q for droplet %q", createdAt, droplet.Name)
+			} else {
+				age = time.Now().Sub(createdAtDate).Hours() / 24.0
 			}
-			age := time.Now().Sub(createdAtDate).Hours() / 24.0
-			result = append(result, core.Server{VendorID: strconv.Itoa(droplet.ID), Name: droplet.Name, Age: age, Region: "Global", State: "RUNNING", Tags: droplet.Tags})
 		}
+		result = append(result, core.Server{VendorID: strconv.Itoa(droplet.ID), Name: droplet.Name, Age: age, Region: "Global", State: "RUNNING", Tags: droplet.Tags})
 	}
 
 	return result, nil
@@ -51,6 +78,16 @@ func (d DigitalOcean) ServerDelete(ctx context.Context, server core.Server) erro
 		return err
 	}
 	return nil
+}
+
+// ServerStop is unsupported on DigitalOcean
+func (d DigitalOcean) ServerStop(ctx context.Context, server core.Server) error {
+	return core.ErrUnsupported
+}
+
+// ServerStart is unsupported on DigitalOcean
+func (d DigitalOcean) ServerStart(ctx context.Context, server core.Server) error {
+	return core.ErrUnsupported
 }
 
 // LoadBalancersGet returns all DigitalOcean load balancers with droplet counts
@@ -68,7 +105,7 @@ func (d DigitalOcean) LoadBalancersGet(ctx context.Context, flagMock bool) ([]co
 		allLBs = append(allLBs, lbs...)
 
 		// break at the last page
-		if resp.Links == nil || resp.Links.IsLastPage() {
+		if resp == nil || resp.Links == nil || resp.Links.IsLastPage() {
 			break
 		}
 
@@ -82,14 +119,16 @@ func (d DigitalOcean) LoadBalancersGet(ctx context.Context, flagMock bool) ([]co
 	// map all load balancers to core.LoadBalancer
 	result := make([]core.LoadBalancer, 0, len(allLBs))
 	for _, lb := range allLBs {
-		// parse RFC3339 creation timestamp; skip age calc if empty
+		// parse RFC3339 creation timestamp; on parse failure log WARN and
+		// include with Age=0 instead of aborting (B10).
 		var age float64
 		if lb.Created != "" {
 			createdAt, err := time.Parse(time.RFC3339, lb.Created)
 			if err != nil {
-				return nil, err
+				core.Warnf(ctx, "unparseable Created %q for load balancer %q", lb.Created, lb.Name)
+			} else {
+				age = time.Now().Sub(createdAt).Hours() / 24.0
 			}
-			age = time.Now().Sub(createdAt).Hours() / 24.0
 		}
 
 		// instance count = explicit droplet IDs; tag-based LBs resolve droplets
@@ -137,7 +176,7 @@ func (d DigitalOcean) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
 		}
 
 		// If we are at the last page, break out the for loop
-		if resp.Links == nil || resp.Links.IsLastPage() {
+		if resp == nil || resp.Links == nil || resp.Links.IsLastPage() {
 			break
 		}
 
@@ -181,7 +220,7 @@ func (d DigitalOcean) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 		allVolumes = append(allVolumes, doVolumes...)
 
 		// break at the last page
-		if resp.Links == nil || resp.Links.IsLastPage() {
+		if resp == nil || resp.Links == nil || resp.Links.IsLastPage() {
 			break
 		}
 
@@ -197,11 +236,15 @@ func (d DigitalOcean) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 	result := make([]core.Volume, 0, len(allVolumes))
 	for _, vol := range allVolumes {
 		age := time.Now().Sub(vol.CreatedAt).Hours() / 24.0
+		region := ""
+		if vol.Region != nil {
+			region = vol.Region.Slug
+		}
 		result = append(result, core.Volume{
 			VendorID: vol.ID,
 			Name:     vol.Name,
 			Age:      age,
-			Region:   vol.Region.Slug,
+			Region:   region,
 			Attached: len(vol.DropletIDs) > 0,
 			Tags:     vol.Tags,
 		})
@@ -224,11 +267,19 @@ func (t *TokenSource) Token() (*oauth2.Token, error) {
 	return token, nil
 }
 
-func (d *DigitalOcean) client(context context.Context) *godo.Client {
-	pat := context.Value("JANITOR_DO_PAT").(string)
-	tokenSource := &TokenSource{
-		AccessToken: pat,
-	}
+// client builds an authenticated godo client. Credentials come from the typed
+// context key core.DOPatKey. For tests, setting core.DOBaseURLKey points the
+// SDK at an httptest server via godo's exported BaseURL field.
+func (d DigitalOcean) client(ctx context.Context) *godo.Client {
+	pat, _ := ctx.Value(core.DOPatKey).(string)
+	tokenSource := &TokenSource{AccessToken: pat}
 	oauthClient := oauth2.NewClient(oauth2.NoContext, tokenSource)
-	return godo.NewClient(oauthClient)
+	client := godo.NewClient(oauthClient)
+	// test seam: if a base URL override is present, redirect the SDK to it.
+	if base, ok := ctx.Value(core.DOBaseURLKey).(string); ok && base != "" {
+		if u, err := url.Parse(base + "/"); err == nil {
+			client.BaseURL = u
+		}
+	}
+	return client
 }

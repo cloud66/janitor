@@ -1,0 +1,5 @@
+{
+  "Volumes": [
+    {"VolumeId": "vol-1", "State": "available", "CreateTime": "2024-01-01T00:00:00Z"}
+  ]
+}
