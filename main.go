@@ -38,8 +38,14 @@ var (
 	flagDOPat              string
 	flagAWSAccessKeyID     string
 	flagAWSSecretAccessKey string
-	flagVultrPat        string
-	flagHetznerPat    string
+	flagVultrPat           string
+	flagHetznerPat         string
+	flagGCPCredentials     string
+	flagGCPProject         string
+	flagAzureSubscriptionID string
+	flagAzureTenantID       string
+	flagAzureClientID       string
+	flagAzureClientSecret   string
 )
 
 func prettyPrint(message string, mock bool) {
@@ -63,6 +69,12 @@ func main() {
 	flag.StringVar(&flagAWSSecretAccessKey, "aws-secret-access-key", os.Getenv("JANITOR_AWS_SECRET_ACCESS_KEY"), "AWS Secret Access Key")
 	flag.StringVar(&flagVultrPat, "vultr-pat", os.Getenv("JANITOR_VULTR_PAT"), "Vultr Personal Access Token")
 	flag.StringVar(&flagHetznerPat, "hetzner-pat", os.Getenv("JANITOR_HETZNER_PAT"), "Hetzner Personal Access Token")
+	flag.StringVar(&flagGCPCredentials, "gcp-credentials", os.Getenv("JANITOR_GCP_CREDENTIALS"), "GCP service account credentials JSON file path (empty for application default credentials)")
+	flag.StringVar(&flagGCPProject, "gcp-project", os.Getenv("JANITOR_GCP_PROJECT"), "GCP project ID")
+	flag.StringVar(&flagAzureSubscriptionID, "azure-subscription-id", os.Getenv("JANITOR_AZURE_SUBSCRIPTION_ID"), "Azure Subscription ID")
+	flag.StringVar(&flagAzureTenantID, "azure-tenant-id", os.Getenv("JANITOR_AZURE_TENANT_ID"), "Azure Tenant ID")
+	flag.StringVar(&flagAzureClientID, "azure-client-id", os.Getenv("JANITOR_AZURE_CLIENT_ID"), "Azure Client ID")
+	flag.StringVar(&flagAzureClientSecret, "azure-client-secret", os.Getenv("JANITOR_AZURE_CLIENT_SECRET"), "Azure Client Secret")
 	//config
 	flag.BoolVar(&flagMock, "mock", strings.ToLower(os.Getenv("MOCK")) != "false", "Don't actually delete anything, just show what *would* happen")
 	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
@@ -112,6 +124,8 @@ func main() {
 	clouds["aws"] = executors.Aws{}
 	clouds["vultr"] = executors.Vultr{}
 	clouds["hetzner"] = executors.Hetzner{}
+	clouds["gcp"] = executors.GCP{}
+	clouds["azure"] = executors.Azure{}
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "JANITOR_DO_PAT", flagDOPat)
@@ -119,6 +133,12 @@ func main() {
 	ctx = context.WithValue(ctx, "JANITOR_AWS_SECRET_ACCESS_KEY", flagAWSSecretAccessKey)
 	ctx = context.WithValue(ctx, "JANITOR_VULTR_PAT", flagVultrPat)
 	ctx = context.WithValue(ctx, "JANITOR_HETZNER_PAT", flagHetznerPat)
+	ctx = context.WithValue(ctx, "JANITOR_GCP_CREDENTIALS", flagGCPCredentials)
+	ctx = context.WithValue(ctx, "JANITOR_GCP_PROJECT", flagGCPProject)
+	ctx = context.WithValue(ctx, "JANITOR_AZURE_SUBSCRIPTION_ID", flagAzureSubscriptionID)
+	ctx = context.WithValue(ctx, "JANITOR_AZURE_TENANT_ID", flagAzureTenantID)
+	ctx = context.WithValue(ctx, "JANITOR_AZURE_CLIENT_ID", flagAzureClientID)
+	ctx = context.WithValue(ctx, "JANITOR_AZURE_CLIENT_SECRET", flagAzureClientSecret)
 
 	if flagAction == actionDelete {
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
