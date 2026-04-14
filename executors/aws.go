@@ -255,10 +255,31 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					}
 					vendorIDs = append(vendorIDs, *instance.InstanceId)
 				}
-				servers, _ := a.ServersGet(ctx, vendorIDs, []string{region})
-				// ServersGet already excludes terminated/shutting-down instances
-				// (see mapEC2State), so every returned server is a live member.
-				instanceCount := len(servers)
+				// determine InstanceCount with a fail-safe contract:
+				//   >= 0 → known live-member count
+				//   -1   → unknown (treat as "skip" downstream, never DEAD)
+				// previously this called ServersGet unconditionally and
+				// discarded the error, which let a transient EC2 outage
+				// flip a live ELB to InstanceCount=0 → DEAD → deletion.
+				// also: an empty vendorIDs slice would trigger a full-region
+				// DescribeInstances scan and miscount membership — short-
+				// circuit to 0 in that case.
+				var instanceCount int
+				if len(vendorIDs) == 0 {
+					instanceCount = 0
+				} else {
+					servers, sErr := a.ServersGet(ctx, vendorIDs, []string{region})
+					if sErr != nil {
+						// log + mark unknown so deleteLoadBalancers skips
+						// rather than treating zero servers as DEAD.
+						core.Warnf(ctx, "ServersGet failed for ELB %s in %s: %v — marking instance count unknown", *name, region, sErr)
+						instanceCount = -1
+					} else {
+						// ServersGet excludes terminated/shutting-down via
+						// mapEC2State, so each returned server is a live member.
+						instanceCount = len(servers)
+					}
+				}
 				results = append(results, core.LoadBalancer{Name: *name, Age: age, InstanceCount: instanceCount, Region: region, Type: "elb"})
 			}
 			if elbOut.NextMarker == nil || *elbOut.NextMarker == "" {

@@ -38,6 +38,7 @@ var (
 
 	flagClouds string
 	flagMock   bool
+	flagYes    bool
 
 	//credentials
 	flagDOPat              string
@@ -74,6 +75,10 @@ func main() {
 	flag.StringVar(&flagHetznerPat, "hetzner-pat", os.Getenv("JANITOR_HETZNER_PAT"), "Hetzner Personal Access Token")
 	//config
 	flag.BoolVar(&flagMock, "mock", strings.ToLower(os.Getenv("MOCK")) != "false", "Don't actually delete anything, just show what *would* happen")
+	// --yes is required for any non-mock delete run. operators or CI must opt
+	// in explicitly; relying on `--mock=false` alone is a single-typo away
+	// from a destructive run against the wrong account.
+	flag.BoolVar(&flagYes, "yes", strings.ToLower(os.Getenv("JANITOR_YES")) == "true", "Required to perform real deletions; without it, --mock=false is rejected.")
 	flag.StringVar(&flagClouds, "clouds", "", "Clouds to work on (comma separated for multiple)")
 
 	var maxAgeNormal, maxAgeLong float64
@@ -136,6 +141,12 @@ func main() {
 	ctx = context.WithValue(ctx, core.OutWriterKey, out)
 
 	if flagAction == actionDelete {
+		// guard: --mock=false is destructive; require --yes (or JANITOR_YES=true)
+		// so a typo cannot trigger live deletion.
+		if !flagMock && !flagYes {
+			fmt.Println("Refusing to run with --mock=false without --yes (or JANITOR_YES=true).")
+			os.Exit(2)
+		}
 		prettyPrint(fmt.Sprintf("[%s ACTION]\n", strings.ToUpper(flagAction)), flagMock)
 		prettyPrint(fmt.Sprintf("NORMAL ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeNormal, flagMaxAgeNormal*24.0), flagMock)
 		prettyPrint(fmt.Sprintf("LONG ALLOWANCE: %.3f days (%.0f hours)\n", flagMaxAgeLong, flagMaxAgeLong*24.0), flagMock)
@@ -161,7 +172,12 @@ func main() {
 
 		servers, err := executor.ServersGet(ctx, nil, nil)
 		if err != nil {
-			fmt.Printf("Cannot get servers due to %s\n", err.Error())
+			// match the LB/SSH/Volume callers: a provider that does not
+			// implement ServersGet returns ErrUnsupported — treat as silent
+			// skip rather than printing an error.
+			if !errors.Is(err, core.ErrUnsupported) {
+				fmt.Printf("[%s] Cannot get servers due to %s\n", userCloud, err.Error())
+			}
 		} else {
 			prettyPrint(fmt.Sprintf("[%d SERVERS]\n", len(servers)), flagMock)
 			sort.Sort(core.ServerSorter(servers))
@@ -211,32 +227,47 @@ func main() {
 	}
 }
 
-// isPermanent checks if a resource name or any of its tags contain the
-// permanent marker (case-insensitive). marker string centralised in core.
-func isPermanent(name string, tags []string) bool {
-	if strings.Contains(strings.ToLower(name), core.TagPermanent) {
-		return true
-	}
+// tagValueContains returns true when any tag is `key=value` (with optional
+// whitespace around key) and the lower-cased value contains marker. tags
+// without "=" are treated as bare values for backwards compat with providers
+// that emit flat tag strings (e.g. AWS Name=foo gets normalised elsewhere).
+// scoping the scan to the value half mirrors the B3 hasSampleTag fix and
+// prevents `C66-STACK=permanent-disabled` from pinning a resource forever.
+func tagValueContains(tags []string, marker string) bool {
 	for _, tag := range tags {
-		if strings.Contains(strings.ToLower(tag), core.TagPermanent) {
+		i := strings.IndexByte(tag, '=')
+		if i < 0 {
+			// no "=" — treat the whole tag as a value (bare label).
+			if strings.Contains(strings.ToLower(tag), marker) {
+				return true
+			}
+			continue
+		}
+		// scan only the value portion, never the key.
+		if strings.Contains(strings.ToLower(tag[i+1:]), marker) {
 			return true
 		}
 	}
 	return false
 }
 
-// hasLongName checks if a resource name or any of its tags contain the long
-// marker (case-insensitive). marker string centralised in core.
+// isPermanent returns true when the resource name or any tag VALUE contains
+// the permanent marker. tag KEYS are excluded so a key like
+// `C66-PERMANENT-OVERRIDE=false` does not pin the resource.
+func isPermanent(name string, tags []string) bool {
+	if strings.Contains(strings.ToLower(name), core.TagPermanent) {
+		return true
+	}
+	return tagValueContains(tags, core.TagPermanent)
+}
+
+// hasLongName returns true when the resource name or any tag VALUE contains
+// the long marker. tag KEYS are excluded for symmetry with isPermanent.
 func hasLongName(name string, tags []string) bool {
 	if strings.Contains(strings.ToLower(name), core.TagLong) {
 		return true
 	}
-	for _, tag := range tags {
-		if strings.Contains(strings.ToLower(tag), core.TagLong) {
-			return true
-		}
-	}
-	return false
+	return tagValueContains(tags, core.TagLong)
 }
 
 // hasSampleTag checks if any tag has key core.TagKeyC66Stack with a value
@@ -267,14 +298,23 @@ func hasSampleTag(tags []string) bool {
 }
 
 func deleteServers(ctx context.Context, cloud string, servers []core.Server) {
+	_ = cloud // retained for callers; sample-tag check now applies to all clouds.
 	for _, server := range servers {
-		if cloud == "vultr" && hasSampleTag(server.Tags) {
-			// skip vultr servers with a C66-STACK tag containing "sample"
+		if hasSampleTag(server.Tags) {
+			// skip any server with a C66-STACK tag containing "sample" —
+			// previously only checked for vultr, leaving AWS/DO/Hetzner sample
+			// stacks vulnerable to deletion.
 			printServer(server, "SMPL")
 			_, _ = fmt.Fprintf(out, "skipped (sample tag)\n")
 		} else if isPermanent(server.Name, server.Tags) {
 			printServer(server, "PERM")
 			_, _ = fmt.Fprintf(out, "skipped (permanent)\n")
+		} else if server.Age <= 0 {
+			// B10: Age=0 means Created was missing/malformed. do not let a
+			// hasLongName/normal predicate decide deletion based on a
+			// fabricated age. skip and surface the reason.
+			printServer(server, "WARN")
+			_, _ = fmt.Fprintf(out, "skipped (unknown age — malformed Created)\n")
 		} else if hasLongName(server.Name, server.Tags) {
 			printServer(server, "LONG")
 			if server.Age > flagMaxAgeLong {

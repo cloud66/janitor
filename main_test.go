@@ -97,8 +97,11 @@ func TestIsPermanent_TagContainsPermanent(t *testing.T) {
 		// match on tag value
 		{"tag value permanent", "my-server", []string{"lifecycle=permanent"}, true},
 		{"tag value permanent-resource", "my-server", []string{"type=permanent-resource"}, true},
-		// match on tag key
-		{"tag key permanent", "my-server", []string{"permanent=true"}, true},
+		// tag KEY containing "permanent" must NOT pin (security fix from PR
+		// review #5: keys are excluded — only the value half is scanned, mirroring
+		// the B3 hasSampleTag fix). a key like `permanent-override=false` would
+		// otherwise pin a resource forever.
+		{"tag key permanent does not match", "my-server", []string{"permanent=true"}, false},
 		// case insensitive
 		{"tag value uppercase PERMANENT", "my-server", []string{"lifecycle=PERMANENT"}, true},
 		// no match in tags
@@ -143,7 +146,9 @@ func TestHasLongName(t *testing.T) {
 		{"empty name", "", nil, false},
 		// match on tag
 		{"tag value contains long", "my-server", []string{"lifecycle=long-running"}, true},
-		{"tag key contains long", "my-server", []string{"long-lived=true"}, true},
+		// tag KEY containing "long" must NOT pin (security fix; symmetric with
+		// isPermanent). only the value half is scanned.
+		{"tag key contains long does not match", "my-server", []string{"long-lived=true"}, false},
 		// no match on tags
 		{"tag without long", "my-server", []string{"lifecycle=temporary"}, false},
 		{"empty tags", "my-server", []string{}, false},
@@ -285,10 +290,13 @@ func TestDeleteServers_Classification(t *testing.T) {
 			expectCategory: "SMPL",
 		},
 		{
-			desc:           "sample tag ignored for non-vultr",
+			// security fix from PR review #5: hasSampleTag now applies to all
+			// clouds, not just vultr. previously AWS/DO/Hetzner servers tagged
+			// `C66-STACK=...sample...` could be deleted.
+			desc:           "sample tag honored for non-vultr",
 			cloud:          "aws",
 			server:         core.Server{Name: "test-app", Age: 10, Region: "us", State: "RUNNING", Tags: []string{"C66-STACK=maestro-sample-prd"}},
-			expectCategory: "NORM", // not SMPL — hasSampleTag only applies to vultr
+			expectCategory: "SMPL",
 		},
 		{
 			desc:           "long server",
