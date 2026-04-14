@@ -48,7 +48,6 @@ type albClient interface {
 // Aws encapsulates all AWS cloud calls.
 // client factories are injectable so tests can substitute fakes.
 type Aws struct {
-	*core.Executor
 	// factories build per-region clients; production wires these to the SDK,
 	// tests replace them with in-memory fakes.
 	ec2Factory func(ctx context.Context, region string) ec2Client
@@ -57,6 +56,10 @@ type Aws struct {
 	// regionsOverride allows tests to shrink the region list.
 	regionsOverride []string
 }
+
+// compile-time assertion that Aws satisfies ExecutorInterface. if this ever
+// fails, the interface grew a method Aws forgot to implement.
+var _ core.ExecutorInterface = Aws{}
 
 // ec2For returns an ec2Client for the given region, using the factory if set.
 func (a Aws) ec2For(ctx context.Context, region string) ec2Client {
@@ -90,6 +93,30 @@ func (a Aws) regions() []string {
 	return a.allRegions()
 }
 
+// mapEC2State canonicalises the EC2 InstanceStateName (e.g. "running",
+// "terminated", "shutting-down") to the upper-case form used throughout
+// janitor. previously ServersGet hardcoded "RUNNING" for everything, so the
+// downstream `server.State != "TERMINATED"` filter was dead code and the
+// classic ELB InstanceCount over-counted freshly terminated instances.
+func mapEC2State(name string) string {
+	switch name {
+	case "terminated":
+		return "TERMINATED"
+	case "shutting-down":
+		return "SHUTTING-DOWN"
+	case "stopped":
+		return "STOPPED"
+	case "stopping":
+		return "STOPPING"
+	case "pending":
+		return "PENDING"
+	case "running":
+		return "RUNNING"
+	default:
+		return "RUNNING"
+	}
+}
+
 // ServersGet return all servers in account
 func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
 	results := make([]core.Server, 0, 0)
@@ -116,7 +143,7 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 				for _, instance := range reservation.Instances {
 					// guard: InstanceId may be nil on malformed responses (B7/nil-ptr).
 					if instance.InstanceId == nil {
-						fmt.Fprintf(out_sink(), "[WARN] skipping instance with nil InstanceId in %s\n", region)
+						core.Warnf(ctx, "skipping instance with nil InstanceId in %s", region)
 						continue
 					}
 					vendorID := *instance.InstanceId
@@ -138,7 +165,7 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 					}
 					// guard: Ebs or AttachTime may be nil; skip rather than panic.
 					if instance.BlockDeviceMappings[0].Ebs == nil || instance.BlockDeviceMappings[0].Ebs.AttachTime == nil {
-						fmt.Fprintf(out_sink(), "[WARN] skipping instance %s: nil Ebs/AttachTime\n", vendorID)
+						core.Warnf(ctx, "skipping instance %s: nil Ebs/AttachTime", vendorID)
 						continue
 					}
 
@@ -157,11 +184,13 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 
 					// guard: State may be nil on some malformed responses.
 					if instance.State == nil {
-						fmt.Fprintf(out_sink(), "[WARN] skipping instance %s: nil State\n", vendorID)
+						core.Warnf(ctx, "skipping instance %s: nil State", vendorID)
 						continue
 					}
-					if instance.State.Name != "terminated" && instance.State.Name != "shutting-down" {
-						state := "RUNNING"
+					// map real EC2 state so downstream code (e.g. classic ELB
+					// InstanceCount) can exclude terminated/shutting-down.
+					state := mapEC2State(string(instance.State.Name))
+					if state != "TERMINATED" && state != "SHUTTING-DOWN" {
 						tags := awsTagsToStrings(instance.Tags)
 						results = append(results, core.Server{VendorID: vendorID, Name: name, Age: age, Region: region, State: state, Tags: tags})
 					}
@@ -192,24 +221,29 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 	var regionErrs []error
 	okCount := 0
 	for _, region := range a.regions() {
-		regionFailed := false
+		// per-region granularity: a region counts OK if EITHER the classic ELB
+		// scan OR the ALB scan returned data. it only fails when BOTH calls
+		// errored. previously a single-service failure flipped `regionFailed`
+		// for the whole region, so a partial AWS outage was falsely aggregated
+		// as "all regions failed".
+		elbOK := true
+		albOK := true
+
 		elb := a.elbFor(ctx, region)
 		// paginate classic ELB DescribeLoadBalancers via Marker (B8).
 		var elbMarker *string
-		elbHadErr := false
 		for {
 			elbOut, err := elb.DescribeLoadBalancers(ctx, &elasticloadbalancing.DescribeLoadBalancersInput{Marker: elbMarker})
 			if err != nil {
 				regionErrs = append(regionErrs, fmt.Errorf("%s elb: %w", region, err))
-				regionFailed = true
-				elbHadErr = true
+				elbOK = false
 				break
 			}
 			for idx := range elbOut.LoadBalancerDescriptions {
 				loadBalancer := elbOut.LoadBalancerDescriptions[idx]
 				// guard: CreatedTime or LoadBalancerName may be nil.
 				if loadBalancer.CreatedTime == nil || loadBalancer.LoadBalancerName == nil {
-					fmt.Fprintf(out_sink(), "[WARN] skipping classic LB with nil CreatedTime/Name in %s\n", region)
+					core.Warnf(ctx, "skipping classic LB with nil CreatedTime/Name in %s", region)
 					continue
 				}
 				age := time.Since(*loadBalancer.CreatedTime).Hours() / 24.0
@@ -222,12 +256,9 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					vendorIDs = append(vendorIDs, *instance.InstanceId)
 				}
 				servers, _ := a.ServersGet(ctx, vendorIDs, []string{region})
-				instanceCount := 0
-				for _, server := range servers {
-					if server.State != "TERMINATED" {
-						instanceCount = instanceCount + 1
-					}
-				}
+				// ServersGet already excludes terminated/shutting-down instances
+				// (see mapEC2State), so every returned server is a live member.
+				instanceCount := len(servers)
 				results = append(results, core.LoadBalancer{Name: *name, Age: age, InstanceCount: instanceCount, Region: region, Type: "elb"})
 			}
 			if elbOut.NextMarker == nil || *elbOut.NextMarker == "" {
@@ -235,7 +266,6 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 			}
 			elbMarker = elbOut.NextMarker
 		}
-		_ = elbHadErr
 
 		// elastic load balancing v2 (ALB/NLB)
 		alb := a.albFor(ctx, region)
@@ -245,14 +275,14 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 			albOut, err := alb.DescribeLoadBalancers(ctx, &elasticloadbalancingv2.DescribeLoadBalancersInput{Marker: albMarker})
 			if err != nil {
 				regionErrs = append(regionErrs, fmt.Errorf("%s alb: %w", region, err))
-				regionFailed = true
+				albOK = false
 				break
 			}
 			for idx := range albOut.LoadBalancers {
 				loadBalancer := albOut.LoadBalancers[idx]
 				// guard against nil CreatedTime / ARN / Name.
 				if loadBalancer.CreatedTime == nil || loadBalancer.LoadBalancerArn == nil || loadBalancer.LoadBalancerName == nil {
-					fmt.Fprintf(out_sink(), "[WARN] skipping ALB with nil CreatedTime/ARN/Name in %s\n", region)
+					core.Warnf(ctx, "skipping ALB with nil CreatedTime/ARN/Name in %s", region)
 					continue
 				}
 				age := time.Since(*loadBalancer.CreatedTime).Hours() / 24.0
@@ -275,12 +305,14 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					}
 				}
 
-				// paginate DescribeListeners (B8).
+				// paginate DescribeListeners (B8) — surface errors via Warnf
+				// instead of silently swallowing them.
 				var listenerArns []string
 				var lstMarker *string
 				for {
 					listenerOutput, err := alb.DescribeListeners(ctx, &elasticloadbalancingv2.DescribeListenersInput{LoadBalancerArn: loadBalancerArn, Marker: lstMarker})
 					if err != nil {
+						core.Warnf(ctx, "DescribeListeners failed for %s: %s", *loadBalancerArn, err.Error())
 						break
 					}
 					for _, listener := range listenerOutput.Listeners {
@@ -295,12 +327,13 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					lstMarker = listenerOutput.NextMarker
 				}
 
-				// paginate per-LB DescribeTargetGroups (B8).
+				// paginate per-LB DescribeTargetGroups (B8) — surface errors.
 				var targetGroupArns []string
 				var tgMarker *string
 				for {
 					targetGroupOutput, err := alb.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{LoadBalancerArn: loadBalancerArn, Marker: tgMarker})
 					if err != nil {
+						core.Warnf(ctx, "DescribeTargetGroups failed for %s: %s", *loadBalancerArn, err.Error())
 						break
 					}
 					for _, targetGroup := range targetGroupOutput.TargetGroups {
@@ -315,8 +348,8 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					tgMarker = targetGroupOutput.NextMarker
 				}
 
-				// count unique instances across all target groups; on error, assume
-				// instances exist to avoid accidental deletion.
+				// count unique instances across all target groups; on error,
+				// assume instances exist to avoid accidental deletion.
 				seenInstances := make(map[string]bool)
 				healthCheckFailed := false
 				for _, tgArn := range targetGroupArns {
@@ -394,7 +427,7 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 						}
 					}
 					if foundMarkedForDeletionTag {
-						prettyPrint(fmt.Sprintf("[%s] ▶ Orphaned Target Group: DELETING\n", *targetGroup.TargetGroupArn), flagMock)
+						prettyPrint(ctx, fmt.Sprintf("[%s] ▶ Orphaned Target Group: DELETING\n", *targetGroup.TargetGroupArn), flagMock)
 						if !flagMock {
 							_, err := alb.DeleteTargetGroup(ctx, &elasticloadbalancingv2.DeleteTargetGroupInput{TargetGroupArn: targetGroup.TargetGroupArn})
 							if err != nil {
@@ -402,7 +435,7 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 							}
 						}
 					} else {
-						prettyPrint(fmt.Sprintf("[%s] ▶ Orphaned Target Group: SETTING TAG\n", *targetGroup.TargetGroupArn), flagMock)
+						prettyPrint(ctx, fmt.Sprintf("[%s] ▶ Orphaned Target Group: SETTING TAG\n", *targetGroup.TargetGroupArn), flagMock)
 						if !flagMock {
 							trueString := "true"
 							// check AddTags error (B7): if tagging failed, do NOT mark
@@ -412,7 +445,7 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 								Tags:         []elasticloadbalancingv2types.Tag{{Key: &markedForDeletionTagKey, Value: &trueString}},
 							})
 							if addErr != nil {
-								fmt.Fprintf(out_sink(), "[WARN] AddTags failed for %s: %s\n", *targetGroup.TargetGroupArn, addErr.Error())
+								core.Warnf(ctx, "AddTags failed for %s: %s", *targetGroup.TargetGroupArn, addErr.Error())
 							}
 						}
 					}
@@ -424,7 +457,8 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 			orphanMarker = targetGroupOutput.NextMarker
 		}
 
-		if !regionFailed {
+		// region counts as OK if either scan returned data.
+		if elbOK || albOK {
 			okCount++
 		}
 	}
@@ -497,6 +531,37 @@ func (a Aws) LoadBalancerDelete(ctx context.Context, loadBalancer core.LoadBalan
 	return errors.New("unrecognised LB type")
 }
 
+// ServerStop is not implemented for AWS; janitor only deletes.
+func (a Aws) ServerStop(ctx context.Context, server core.Server) error {
+	return core.ErrUnsupported
+}
+
+// ServerStart is not implemented for AWS; janitor only deletes.
+func (a Aws) ServerStart(ctx context.Context, server core.Server) error {
+	return core.ErrUnsupported
+}
+
+// SshKeysGet is not implemented for AWS; account-wide key-pair management
+// isn't something janitor manages yet.
+func (a Aws) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
+	return nil, core.ErrUnsupported
+}
+
+// SshKeyDelete is not implemented for AWS.
+func (a Aws) SshKeyDelete(ctx context.Context, sshKey core.SshKey) error {
+	return core.ErrUnsupported
+}
+
+// VolumesGet is not implemented for AWS yet.
+func (a Aws) VolumesGet(ctx context.Context) ([]core.Volume, error) {
+	return nil, core.ErrUnsupported
+}
+
+// VolumeDelete is not implemented for AWS yet.
+func (a Aws) VolumeDelete(ctx context.Context, volume core.Volume) error {
+	return core.ErrUnsupported
+}
+
 func (a Aws) ec2Client(ctx context.Context, region string) *ec2.Client {
 	return ec2.New(ec2.Options{
 		Region:      region,
@@ -524,8 +589,10 @@ func (a Aws) credentials(ctx context.Context) *aws.CredentialsCache {
 	if credentialsCache != nil {
 		return credentialsCache
 	}
-	accessKey := ctx.Value("JANITOR_AWS_ACCESS_KEY_ID").(string)
-	secretKey := ctx.Value("JANITOR_AWS_SECRET_ACCESS_KEY").(string)
+	// use typed ctx keys now — the previous string-literal reads tripped go
+	// vet SA1029 and risked collisions with other packages.
+	accessKey, _ := ctx.Value(core.AWSAccessKeyIDKey).(string)
+	secretKey, _ := ctx.Value(core.AWSSecretAccessKeyKey).(string)
 	credentialsProvider := credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")
 	credentialsCache = aws.NewCredentialsCache(credentialsProvider)
 	return credentialsCache
@@ -565,13 +632,14 @@ func awsAlbTagsToStrings(tags []elasticloadbalancingv2types.Tag) []string {
 	return result
 }
 
-func prettyPrint(message string, mock bool) {
-	// route through the package-level out_sink so tests can capture output.
-	// TODO: replace with core.Warnf once Phase 4 lands it.
-	if mock == true {
-		fmt.Fprintf(out_sink(), "[MOCK] %s", message)
+// prettyPrint routes normal (non-warning) executor output through the
+// ctx-bound OutWriterKey writer. tests populate this via captureOut; main
+// populates it from the package-level `out` sink.
+func prettyPrint(ctx context.Context, message string, mock bool) {
+	if mock {
+		core.Writef(ctx, "[MOCK] %s", message)
 	} else {
-		fmt.Fprintf(out_sink(), "%s", message)
+		core.Writef(ctx, "%s", message)
 	}
 }
 

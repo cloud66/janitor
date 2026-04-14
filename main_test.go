@@ -292,16 +292,31 @@ func TestDeleteServers_Classification(t *testing.T) {
 		},
 	}
 
+	// all possible category tags — used for negative assertions
+	allCategories := []string{"PERM", "SMPL", "LONG", "NORM"}
+
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
 			// capture printed output and assert the classification tag shows up
 			got := captureOutput(t, func() {
 				deleteServers(nil, tt.cloud, []core.Server{tt.server})
 			})
-			// the category tag is printed inside brackets by printServer
-			want := "[" + tt.expectCategory + "]"
+			// anchor with bracket-space-bracket on BOTH sides so a loose
+			// substring like "[PERM]" embedded in a name cannot match
+			want := "] [" + tt.expectCategory + "] ["
 			if !strings.Contains(got, want) {
 				t.Errorf("expected output to contain %q, got %q", want, got)
+			}
+			// negative assertion: none of the OTHER category tags appear in
+			// the slot — catches mis-classifications and loose substring hits
+			for _, cat := range allCategories {
+				if cat == tt.expectCategory {
+					continue
+				}
+				bad := "] [" + cat + "] ["
+				if strings.Contains(got, bad) {
+					t.Errorf("unexpected category tag %q in output %q", bad, got)
+				}
 			}
 		})
 	}
@@ -320,8 +335,15 @@ func TestDeleteLoadBalancers_PermanentSkipped(t *testing.T) {
 	got := captureOutput(t, func() {
 		deleteLoadBalancers(nil, lbs)
 	})
-	if !strings.Contains(got, "[PERM]") {
-		t.Errorf("expected output to contain [PERM], got %q", got)
+	// anchor the state tag with bracket-space-bracket on both sides
+	if !strings.Contains(got, "] [PERM] [") {
+		t.Errorf("expected output to contain \"] [PERM] [\", got %q", got)
+	}
+	// negative assertions: no OTHER LB state tag should appear in the slot
+	for _, bad := range []string{"] [LIVE] [", "] [ NEW] [", "] [ N/A] [", "] [DEAD] ["} {
+		if strings.Contains(got, bad) {
+			t.Errorf("unexpected state tag %q in output %q", bad, got)
+		}
 	}
 	if !strings.Contains(got, "skipped (permanent)") {
 		t.Errorf("expected output to contain skipped (permanent), got %q", got)
@@ -356,6 +378,48 @@ func TestDeleteLoadBalancers_NewSkipped(t *testing.T) {
 	if !strings.Contains(got, "less than 1 hour old") {
 		t.Errorf("expected output to contain less than 1 hour old, got %q", got)
 	}
+}
+
+// TestDeleteLoadBalancers_AgeBoundary probes values either side of the
+// 1-hour-in-days threshold (1.0/24.0 ≈ 0.04167) to pin the boundary
+// semantics. 0.04 is just below (~57.6m), 0.05 is just above (72m).
+func TestDeleteLoadBalancers_AgeBoundary(t *testing.T) {
+	withFlags(t, true, flagMaxAgeNormal, flagMaxAgeLong)
+
+	t.Run("just below threshold still too new", func(t *testing.T) {
+		// 0.04 days ≈ 57.6 minutes, still < 1 hour threshold
+		lbs := []core.LoadBalancer{
+			{Name: "near-new-lb", Age: 0.04, InstanceCount: 0, Region: "us", Type: "alb"},
+		}
+		got := captureOutput(t, func() {
+			deleteLoadBalancers(nil, lbs)
+		})
+		if !strings.Contains(got, "less than 1 hour old") {
+			t.Errorf("expected 'less than 1 hour old' at Age=0.04, got %q", got)
+		}
+		// must not be classified as DEAD
+		if strings.Contains(got, "] [DEAD] [") {
+			t.Errorf("unexpected DEAD classification at Age=0.04, got %q", got)
+		}
+	})
+
+	t.Run("just above threshold eligible for delete", func(t *testing.T) {
+		// 0.05 days = 72 minutes, > 1 hour threshold; 0 instances → DEAD path
+		lbs := []core.LoadBalancer{
+			{Name: "just-old-lb", Age: 0.05, InstanceCount: 0, Region: "us", Type: "alb"},
+		}
+		got := captureOutput(t, func() {
+			deleteLoadBalancers(nil, lbs)
+		})
+		// should NOT be skipped as too new
+		if strings.Contains(got, "less than 1 hour old") {
+			t.Errorf("did not expect 'less than 1 hour old' at Age=0.05, got %q", got)
+		}
+		// should proceed to delete path in mock mode
+		if !strings.Contains(got, "Mock deleted!") {
+			t.Errorf("expected 'Mock deleted!' at Age=0.05 with 0 instances, got %q", got)
+		}
+	})
 }
 
 func TestDeleteLoadBalancers_UnknownInstanceCountSkipped(t *testing.T) {

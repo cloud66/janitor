@@ -1,9 +1,0 @@
-{
-  "LoadBalancers": [
-    {
-      "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:111:loadbalancer/app/foo/abc",
-      "LoadBalancerName": "foo",
-      "CreatedTime": "2024-01-01T00:00:00Z"
-    }
-  ]
-}

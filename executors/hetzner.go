@@ -1,14 +1,15 @@
 package executors
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloud66/janitor/core"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
-	"golang.org/x/net/context"
 )
 
 // Hetzner encapsulates all Hetzner Cloud calls. Implements
@@ -36,7 +37,7 @@ func (h Hetzner) ServersGet(ctx context.Context, vendorIDs []string, regions []s
 		// number. (See B10 for the string-parse sibling behavior.)
 		var age float64
 		if !server.Created.IsZero() {
-			age = time.Now().Sub(server.Created).Hours() / 24.0
+			age = time.Since(server.Created).Hours() / 24.0
 		} else {
 			core.Warnf(ctx, "missing Created for server %q", server.Name)
 		}
@@ -102,7 +103,7 @@ func (h Hetzner) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.Lo
 	for _, lb := range lbs {
 		var age float64
 		if !lb.Created.IsZero() {
-			age = time.Now().Sub(lb.Created).Hours() / 24.0
+			age = time.Since(lb.Created).Hours() / 24.0
 		} else {
 			core.Warnf(ctx, "missing Created for load balancer %q", lb.Name)
 		}
@@ -175,7 +176,7 @@ func (h Hetzner) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 	for _, vol := range volumes {
 		var age float64
 		if !vol.Created.IsZero() {
-			age = time.Now().Sub(vol.Created).Hours() / 24.0
+			age = time.Since(vol.Created).Hours() / 24.0
 		} else {
 			core.Warnf(ctx, "missing Created for volume %q", vol.Name)
 		}
@@ -227,9 +228,23 @@ func parseHetznerID(s string) (int64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("empty hetzner id")
 	}
+	// reject leading '+' sign: strconv.ParseInt accepts it but Hetzner IDs
+	// never carry a sign, so treat it as malformed input.
+	if s[0] == '+' {
+		return 0, fmt.Errorf("invalid hetzner id %q: leading sign not allowed", s)
+	}
+	// reject surrounding whitespace: ParseInt rejects it too, but be explicit
+	// so the error message is consistent with the other rejections.
+	if s != strings.TrimSpace(s) {
+		return 0, fmt.Errorf("invalid hetzner id %q: whitespace not allowed", s)
+	}
 	id, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid hetzner id %q: %w", s, err)
+	}
+	// reject non-positive IDs — Hetzner resource IDs are always > 0.
+	if id <= 0 {
+		return 0, fmt.Errorf("invalid hetzner id %q: must be positive", s)
 	}
 	return id, nil
 }

@@ -1,0 +1,21 @@
+{
+  "load_balancers": [
+    {
+      "id": 200,
+      "name": "lb-page1-a",
+      "created": "2024-01-01T00:00:00+00:00",
+      "location": {"id": 1, "name": "fsn1", "description": "", "country": "DE", "city": "Falkenstein", "latitude": 0, "longitude": 0, "network_zone": "eu-central"},
+      "labels": {},
+      "targets": []
+    },
+    {
+      "id": 201,
+      "name": "lb-page1-b",
+      "created": "2024-01-01T00:00:00+00:00",
+      "location": {"id": 1, "name": "fsn1", "description": "", "country": "DE", "city": "Falkenstein", "latitude": 0, "longitude": 0, "network_zone": "eu-central"},
+      "labels": {},
+      "targets": []
+    }
+  ],
+  "meta": {"pagination": {"page": 1, "per_page": 2, "previous_page": null, "next_page": 2, "last_page": 2, "total_entries": 3}}
+}

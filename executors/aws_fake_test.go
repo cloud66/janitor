@@ -101,9 +101,15 @@ type fakeALB struct {
 	// paginated outputs for the top-level (no LoadBalancerArn) TG scan.
 	tgPages []*elasticloadbalancingv2.DescribeTargetGroupsOutput
 
-	// per-LB describe outputs (keyed by LB ARN).
+	// per-LB describe outputs (keyed by LB ARN). single-page helpers.
 	perLBListeners    map[string]*elasticloadbalancingv2.DescribeListenersOutput
 	perLBTargetGroups map[string]*elasticloadbalancingv2.DescribeTargetGroupsOutput
+
+	// per-LB paginated outputs — drive multi-page responses in tests.
+	// key: "<LB-ARN>|<page-index>" → output. NextMarker in each page steers
+	// the caller to "page<N+1>"; absence of a key ends the loop.
+	perLBListenerPages    map[string][]*elasticloadbalancingv2.DescribeListenersOutput
+	perLBTargetGroupPages map[string][]*elasticloadbalancingv2.DescribeTargetGroupsOutput
 
 	// tags keyed by resource ARN; AddTags/RemoveTags mutate this map.
 	tags map[string][]elbv2types.Tag
@@ -117,11 +123,13 @@ type fakeALB struct {
 
 func newFakeALB(log *callLog) *fakeALB {
 	return &fakeALB{
-		log:               log,
-		perLBListeners:    map[string]*elasticloadbalancingv2.DescribeListenersOutput{},
-		perLBTargetGroups: map[string]*elasticloadbalancingv2.DescribeTargetGroupsOutput{},
-		tags:              map[string][]elbv2types.Tag{},
-		health:            map[string]*elasticloadbalancingv2.DescribeTargetHealthOutput{},
+		log:                   log,
+		perLBListeners:        map[string]*elasticloadbalancingv2.DescribeListenersOutput{},
+		perLBTargetGroups:     map[string]*elasticloadbalancingv2.DescribeTargetGroupsOutput{},
+		perLBListenerPages:    map[string][]*elasticloadbalancingv2.DescribeListenersOutput{},
+		perLBTargetGroupPages: map[string][]*elasticloadbalancingv2.DescribeTargetGroupsOutput{},
+		tags:                  map[string][]elbv2types.Tag{},
+		health:                map[string]*elasticloadbalancingv2.DescribeTargetHealthOutput{},
 	}
 }
 
@@ -156,6 +164,17 @@ func (f *fakeALB) DescribeListeners(ctx context.Context, in *elasticloadbalancin
 	if in.LoadBalancerArn == nil {
 		return &elasticloadbalancingv2.DescribeListenersOutput{}, nil
 	}
+	// paginated form takes precedence when present for this LB.
+	if pages, ok := f.perLBListenerPages[*in.LoadBalancerArn]; ok {
+		idx := 0
+		if in.Marker != nil {
+			fmt.Sscanf(*in.Marker, "page%d", &idx)
+		}
+		if idx >= len(pages) {
+			return &elasticloadbalancingv2.DescribeListenersOutput{}, nil
+		}
+		return pages[idx], nil
+	}
 	if out, ok := f.perLBListeners[*in.LoadBalancerArn]; ok {
 		return out, nil
 	}
@@ -164,8 +183,18 @@ func (f *fakeALB) DescribeListeners(ctx context.Context, in *elasticloadbalancin
 
 func (f *fakeALB) DescribeTargetGroups(ctx context.Context, in *elasticloadbalancingv2.DescribeTargetGroupsInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeTargetGroupsOutput, error) {
 	f.log.add("alb.DescribeTargetGroups")
-	// per-LB query returns the map entry for that LB.
+	// per-LB query: prefer paginated form, fall back to single-page map.
 	if in.LoadBalancerArn != nil {
+		if pages, ok := f.perLBTargetGroupPages[*in.LoadBalancerArn]; ok {
+			idx := 0
+			if in.Marker != nil {
+				fmt.Sscanf(*in.Marker, "page%d", &idx)
+			}
+			if idx >= len(pages) {
+				return &elasticloadbalancingv2.DescribeTargetGroupsOutput{}, nil
+			}
+			return pages[idx], nil
+		}
 		if out, ok := f.perLBTargetGroups[*in.LoadBalancerArn]; ok {
 			return out, nil
 		}
@@ -245,21 +274,22 @@ func (f *fakeALB) DeleteLoadBalancer(ctx context.Context, in *elasticloadbalanci
 
 // --- helpers ----------------------------------------------------------------
 
-// captureOut swaps the package-level testOut writer for the test's duration.
-func captureOut(t *testing.T) *bytes.Buffer {
+// captureOut returns a buffer wired into a fresh context under both
+// WarnWriterKey and OutWriterKey. tests that want to assert on executor
+// output should thread the returned context through their calls.
+func captureOut(t *testing.T) (*bytes.Buffer, context.Context) {
 	t.Helper()
 	buf := &bytes.Buffer{}
-	prev := testOut
-	testOut = buf
-	t.Cleanup(func() { testOut = prev })
-	return buf
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, core.WarnWriterKey, buf)
+	ctx = context.WithValue(ctx, core.OutWriterKey, buf)
+	return buf, ctx
 }
 
 // newTestAws constructs an Aws executor with single-region scope and the
 // provided fakes wired as factories.
 func newTestAws(ec2f *fakeEC2, elbf *fakeELB, albf *fakeALB) Aws {
 	return Aws{
-		Executor:        &core.Executor{},
 		regionsOverride: []string{"us-east-1"},
 		ec2Factory:      func(ctx context.Context, r string) ec2Client { return ec2f },
 		elbFactory:      func(ctx context.Context, r string) elbClient { return elbf },
@@ -354,9 +384,9 @@ func TestAws_OrphanTG_AddTagsError_B7(t *testing.T) {
 		}},
 	}
 	a := newTestAws(&fakeEC2{log: log}, &fakeELB{log: log}, alb)
-	buf := captureOut(t)
+	buf, ctx := captureOut(t)
 
-	if _, err := a.LoadBalancersGet(context.Background(), false); err != nil {
+	if _, err := a.LoadBalancersGet(ctx, false); err != nil {
 		t.Fatalf("LoadBalancersGet err: %v", err)
 	}
 
@@ -496,9 +526,9 @@ func TestAws_ServersGet_NilEbs_SkipsWithWarning(t *testing.T) {
 		},
 	}
 	a := newTestAws(ec2f, &fakeELB{log: log}, newFakeALB(log))
-	buf := captureOut(t)
+	buf, ctx := captureOut(t)
 
-	servers, err := a.ServersGet(context.Background(), nil, nil)
+	servers, err := a.ServersGet(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -527,3 +557,161 @@ func TestAws_ServerDelete_CallsModifyThenTerminate(t *testing.T) {
 
 // dummy use of aws.String to stop unused-import when edits churn.
 var _ = aws.String
+
+// --- followup: partial-failure per-region granularity ---------------------
+
+// TestAws_LoadBalancersGet_ELBFailALBSuccess asserts that a region where the
+// classic ELB call errors but the ALB call succeeds is NOT counted as "failed"
+// — the old code flipped regionFailed on any single-service error, which
+// propagated to "all regions failed" aggregation downstream.
+func TestAws_LoadBalancersGet_ELBFailALBSuccess(t *testing.T) {
+	log := &callLog{}
+	elb := &fakeELB{log: log, describeErr: errors.New("AccessDenied")}
+	alb := newFakeALB(log)
+	// one healthy ALB with no target groups (so InstanceCount=0).
+	lbArn := "arn:alb:1"
+	lbName := "alb1"
+	created := time.Now().Add(-48 * time.Hour)
+	alb.lbPages = []*elasticloadbalancingv2.DescribeLoadBalancersOutput{
+		{LoadBalancers: []elbv2types.LoadBalancer{
+			{LoadBalancerArn: &lbArn, LoadBalancerName: &lbName, CreatedTime: &created},
+		}},
+	}
+	a := newTestAws(&fakeEC2{log: log}, elb, alb)
+
+	lbs, err := a.LoadBalancersGet(context.Background(), true)
+	if err != nil {
+		t.Fatalf("unexpected error — ELB-fail+ALB-success must count as region OK: %v", err)
+	}
+	if len(lbs) != 1 {
+		t.Fatalf("expected ALB to be returned despite ELB failure, got %d", len(lbs))
+	}
+}
+
+// --- followup: dead TERMINATED filter (real EC2 state mapping) ------------
+
+// TestAws_ELB_ExcludesTerminatedMembers seeds an ELB with 3 members — 2
+// running and 1 terminated — and asserts InstanceCount is 2, not 3. Before
+// the fix, ServersGet stamped every returned server as "RUNNING", so the
+// downstream `!= "TERMINATED"` filter was dead and the count was wrong.
+func TestAws_ELB_ExcludesTerminatedMembers(t *testing.T) {
+	log := &callLog{}
+	now := time.Now().Add(-48 * time.Hour)
+	idA, idB, idC := "i-a", "i-b", "i-c"
+	ec2f := &fakeEC2{
+		log: log,
+		describePages: []*ec2.DescribeInstancesOutput{{
+			Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{
+				{InstanceId: &idA, State: &ec2types.InstanceState{Name: "running"},
+					BlockDeviceMappings: []ec2types.InstanceBlockDeviceMapping{{Ebs: &ec2types.EbsInstanceBlockDevice{AttachTime: &now}}}},
+				{InstanceId: &idB, State: &ec2types.InstanceState{Name: "running"},
+					BlockDeviceMappings: []ec2types.InstanceBlockDeviceMapping{{Ebs: &ec2types.EbsInstanceBlockDevice{AttachTime: &now}}}},
+				{InstanceId: &idC, State: &ec2types.InstanceState{Name: "terminated"},
+					BlockDeviceMappings: []ec2types.InstanceBlockDeviceMapping{{Ebs: &ec2types.EbsInstanceBlockDevice{AttachTime: &now}}}},
+			}}},
+		}},
+	}
+	// classic ELB referencing all three members.
+	lbName := "elb-with-dead-member"
+	lbCreated := time.Now().Add(-96 * time.Hour)
+	elb := &fakeELB{log: log, lbs: []elbtypes.LoadBalancerDescription{{
+		LoadBalancerName: &lbName,
+		CreatedTime:      &lbCreated,
+		Instances: []elbtypes.Instance{
+			{InstanceId: &idA}, {InstanceId: &idB}, {InstanceId: &idC},
+		},
+	}}}
+	a := newTestAws(ec2f, elb, newFakeALB(log))
+
+	lbs, err := a.LoadBalancersGet(context.Background(), true)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// find the classic ELB entry — there will also be any ALB results (none here).
+	var got *core.LoadBalancer
+	for i := range lbs {
+		if lbs[i].Type == "elb" {
+			got = &lbs[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("expected a classic ELB result")
+	}
+	if got.InstanceCount != 2 {
+		t.Fatalf("expected InstanceCount=2 (terminated excluded), got %d", got.InstanceCount)
+	}
+}
+
+// --- followup: DescribeListeners pagination ------------------------------
+
+func TestAws_ALB_ListenersPagination(t *testing.T) {
+	log := &callLog{}
+	alb := newFakeALB(log)
+	lbArn := "arn:alb:p"
+	lbName := "alb-p"
+	created := time.Now().Add(-48 * time.Hour)
+	alb.lbPages = []*elasticloadbalancingv2.DescribeLoadBalancersOutput{
+		{LoadBalancers: []elbv2types.LoadBalancer{
+			{LoadBalancerArn: &lbArn, LoadBalancerName: &lbName, CreatedTime: &created},
+		}},
+	}
+	// two-page listener response.
+	l1, l2, l3 := "arn:l1", "arn:l2", "arn:l3"
+	p1Marker := "page1"
+	alb.perLBListenerPages[lbArn] = []*elasticloadbalancingv2.DescribeListenersOutput{
+		{Listeners: []elbv2types.Listener{{ListenerArn: &l1}, {ListenerArn: &l2}}, NextMarker: &p1Marker},
+		{Listeners: []elbv2types.Listener{{ListenerArn: &l3}}},
+	}
+	a := newTestAws(&fakeEC2{log: log}, &fakeELB{log: log}, alb)
+
+	lbs, err := a.LoadBalancersGet(context.Background(), true)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var got *core.LoadBalancer
+	for i := range lbs {
+		if lbs[i].Type == "alb" {
+			got = &lbs[i]
+		}
+	}
+	if got == nil || len(got.ListenerArns) != 3 {
+		t.Fatalf("expected 3 listeners across 2 pages, got %+v", got)
+	}
+}
+
+// --- followup: per-LB DescribeTargetGroups pagination --------------------
+
+func TestAws_ALB_PerLBTargetGroupsPagination(t *testing.T) {
+	log := &callLog{}
+	alb := newFakeALB(log)
+	lbArn := "arn:alb:tgp"
+	lbName := "alb-tgp"
+	created := time.Now().Add(-48 * time.Hour)
+	alb.lbPages = []*elasticloadbalancingv2.DescribeLoadBalancersOutput{
+		{LoadBalancers: []elbv2types.LoadBalancer{
+			{LoadBalancerArn: &lbArn, LoadBalancerName: &lbName, CreatedTime: &created},
+		}},
+	}
+	tg1, tg2, tg3 := "arn:tg1", "arn:tg2", "arn:tg3"
+	p1Marker := "page1"
+	alb.perLBTargetGroupPages[lbArn] = []*elasticloadbalancingv2.DescribeTargetGroupsOutput{
+		{TargetGroups: []elbv2types.TargetGroup{{TargetGroupArn: &tg1}, {TargetGroupArn: &tg2}}, NextMarker: &p1Marker},
+		{TargetGroups: []elbv2types.TargetGroup{{TargetGroupArn: &tg3}}},
+	}
+	a := newTestAws(&fakeEC2{log: log}, &fakeELB{log: log}, alb)
+
+	lbs, err := a.LoadBalancersGet(context.Background(), true)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var got *core.LoadBalancer
+	for i := range lbs {
+		if lbs[i].Type == "alb" {
+			got = &lbs[i]
+		}
+	}
+	if got == nil || len(got.TargetGroupArns) != 3 {
+		t.Fatalf("expected 3 TGs across 2 pages, got %+v", got)
+	}
+}

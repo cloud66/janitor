@@ -1,11 +1,11 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/cloud66/janitor/core"
-	"golang.org/x/net/context"
 )
 
 // fakeExecutor is a minimal core.ExecutorInterface impl used by

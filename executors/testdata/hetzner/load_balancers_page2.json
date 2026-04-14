@@ -1,0 +1,13 @@
+{
+  "load_balancers": [
+    {
+      "id": 202,
+      "name": "lb-page2-a",
+      "created": "2024-01-01T00:00:00+00:00",
+      "location": {"id": 1, "name": "fsn1", "description": "", "country": "DE", "city": "Falkenstein", "latitude": 0, "longitude": 0, "network_zone": "eu-central"},
+      "labels": {},
+      "targets": []
+    }
+  ],
+  "meta": {"pagination": {"page": 2, "per_page": 2, "previous_page": 1, "next_page": null, "last_page": 2, "total_entries": 3}}
+}

@@ -1,13 +1,13 @@
 package executors
 
 import (
+	"context"
 	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/cloud66/janitor/core"
 	"github.com/digitalocean/godo"
-	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 )
 
@@ -61,7 +61,7 @@ func (d DigitalOcean) ServersGet(ctx context.Context, vendorIDs []string, region
 			if err != nil {
 				core.Warnf(ctx, "unparseable Created %q for droplet %q", createdAt, droplet.Name)
 			} else {
-				age = time.Now().Sub(createdAtDate).Hours() / 24.0
+				age = time.Since(createdAtDate).Hours() / 24.0
 			}
 		}
 		result = append(result, core.Server{VendorID: strconv.Itoa(droplet.ID), Name: droplet.Name, Age: age, Region: "Global", State: "RUNNING", Tags: droplet.Tags})
@@ -127,7 +127,7 @@ func (d DigitalOcean) LoadBalancersGet(ctx context.Context, flagMock bool) ([]co
 			if err != nil {
 				core.Warnf(ctx, "unparseable Created %q for load balancer %q", lb.Created, lb.Name)
 			} else {
-				age = time.Now().Sub(createdAt).Hours() / 24.0
+				age = time.Since(createdAt).Hours() / 24.0
 			}
 		}
 
@@ -171,9 +171,8 @@ func (d DigitalOcean) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
 			return nil, err
 		}
 
-		for _, doSshKey := range doSshKeys {
-			doAllSshKeys = append(doAllSshKeys, doSshKey)
-		}
+		// flatten the current page into the aggregate slice
+		doAllSshKeys = append(doAllSshKeys, doSshKeys...)
 
 		// If we are at the last page, break out the for loop
 		if resp == nil || resp.Links == nil || resp.Links.IsLastPage() {
@@ -235,7 +234,7 @@ func (d DigitalOcean) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 	// map all volumes to core.Volume with attachment status
 	result := make([]core.Volume, 0, len(allVolumes))
 	for _, vol := range allVolumes {
-		age := time.Now().Sub(vol.CreatedAt).Hours() / 24.0
+		age := time.Since(vol.CreatedAt).Hours() / 24.0
 		region := ""
 		if vol.Region != nil {
 			region = vol.Region.Slug
@@ -273,7 +272,8 @@ func (t *TokenSource) Token() (*oauth2.Token, error) {
 func (d DigitalOcean) client(ctx context.Context) *godo.Client {
 	pat, _ := ctx.Value(core.DOPatKey).(string)
 	tokenSource := &TokenSource{AccessToken: pat}
-	oauthClient := oauth2.NewClient(oauth2.NoContext, tokenSource)
+	// oauth2.NoContext is deprecated; use context.Background for the same effect.
+	oauthClient := oauth2.NewClient(context.Background(), tokenSource)
 	client := godo.NewClient(oauthClient)
 	// test seam: if a base URL override is present, redirect the SDK to it.
 	if base, ok := ctx.Value(core.DOBaseURLKey).(string); ok && base != "" {

@@ -1,11 +1,11 @@
 package executors
 
 import (
+	"context"
 	"time"
 
 	"github.com/cloud66/janitor/core"
 	"github.com/vultr/govultr/v3"
-	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 )
 
@@ -49,7 +49,7 @@ func (v Vultr) ServersGet(ctx context.Context, vendorIDs []string, regions []str
 			if err != nil {
 				core.Warnf(ctx, "unparseable DateCreated %q for instance %q", inst.DateCreated, inst.Label)
 			} else {
-				age = time.Now().Sub(createdAt).Hours() / 24.0
+				age = time.Since(createdAt).Hours() / 24.0
 			}
 		}
 
@@ -113,7 +113,7 @@ func (v Vultr) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.Load
 			if err != nil {
 				core.Warnf(ctx, "unparseable DateCreated %q for load balancer %q", lb.DateCreated, lb.Label)
 			} else {
-				age = time.Now().Sub(createdAt).Hours() / 24.0
+				age = time.Since(createdAt).Hours() / 24.0
 			}
 		}
 
@@ -177,7 +177,7 @@ func (v Vultr) VolumesGet(ctx context.Context) ([]core.Volume, error) {
 			if err != nil {
 				core.Warnf(ctx, "unparseable DateCreated %q for block storage %q", vol.DateCreated, vol.Label)
 			} else {
-				age = time.Now().Sub(createdAt).Hours() / 24.0
+				age = time.Since(createdAt).Hours() / 24.0
 			}
 		}
 
@@ -210,8 +210,12 @@ func (v Vultr) client(ctx context.Context) *govultr.Client {
 	oauthClient := oauth2.NewClient(ctx, tokenSource)
 	client := govultr.NewClient(oauthClient)
 	if base, ok := ctx.Value(core.VultrBaseURLKey).(string); ok && base != "" {
-		// SetBaseURL validates the URL; ignore its error and keep default on failure.
-		_ = client.SetBaseURL(base)
+		// SetBaseURL validates the URL; surface failures via Warnf so tests
+		// redirecting to httptest still fail loudly instead of silently hitting
+		// the real Vultr API. Default base URL stays active on failure.
+		if err := client.SetBaseURL(base); err != nil {
+			core.Warnf(ctx, "vultr SetBaseURL(%q) failed: %v", base, err)
+		}
 	}
 	return client
 }

@@ -1,7 +1,7 @@
 package core
 
 import (
-	"golang.org/x/net/context"
+	"context"
 )
 
 // Executor is a legacy no-op base retained only for backwards source-level
