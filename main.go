@@ -48,6 +48,16 @@ var (
 	flagHetznerPat         string
 )
 
+// requireYesGate returns "" when a delete run may proceed, or the operator-
+// facing refusal message when --mock=false was set without --yes. extracted
+// from main() so it's directly unit-testable without invoking os.Exit.
+func requireYesGate(mock, yes bool) string {
+	if mock || yes {
+		return ""
+	}
+	return "Refusing to run with --mock=false without --yes on the command line."
+}
+
 func prettyPrint(message string, mock bool) {
 	// route through the package-level out sink so tests can capture output.
 	// Fprintf errors on stdout / bytes.Buffer are not actionable → ignore.
@@ -143,8 +153,8 @@ func main() {
 
 	if flagAction == actionDelete {
 		// guard: --mock=false is destructive; require --yes on the CLI.
-		if !flagMock && !flagYes {
-			fmt.Fprintln(os.Stderr, "Refusing to run with --mock=false without --yes on the command line.")
+		if msg := requireYesGate(flagMock, flagYes); msg != "" {
+			fmt.Fprintln(os.Stderr, msg)
 			os.Exit(2)
 		}
 		// loud banner: announce live mode + the cloud(s) being targeted so

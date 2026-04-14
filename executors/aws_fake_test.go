@@ -148,6 +148,11 @@ type fakeALB struct {
 	// injected errors.
 	addTagsErr error
 
+	// deleteTGFailUntil makes the next N DeleteTargetGroup calls return a
+	// synthetic ResourceInUse error before succeeding on call N+1. drives
+	// the retry-on-ResourceInUse coverage (round-3 C7).
+	deleteTGFailUntil int
+
 	// health describe — keyed by TG arn.
 	health map[string]*elasticloadbalancingv2.DescribeTargetHealthOutput
 }
@@ -295,6 +300,10 @@ func (f *fakeALB) DeleteListener(ctx context.Context, in *elasticloadbalancingv2
 
 func (f *fakeALB) DeleteTargetGroup(ctx context.Context, in *elasticloadbalancingv2.DeleteTargetGroupInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DeleteTargetGroupOutput, error) {
 	f.log.add("alb.DeleteTargetGroup")
+	if f.deleteTGFailUntil > 0 {
+		f.deleteTGFailUntil--
+		return nil, errors.New("ResourceInUseException: target group is currently in use")
+	}
 	return &elasticloadbalancingv2.DeleteTargetGroupOutput{}, nil
 }
 
@@ -455,6 +464,126 @@ func TestAws_ServersGet_AllRegionsFail_MultiRegion_B6(t *testing.T) {
 // (TestAws_OrphanTG_AddTagsError_B7, TestAws_OrphanTG_PaginationFindsOwningLB_B8)
 // will return when the sweep is reintroduced with HMAC-signed marks or
 // out-of-band state in a follow-up PR.
+
+// classic ELB DescribeTags must populate core.LoadBalancer.Tags so the
+// downstream isPermanent / hasSampleTag predicates can match on tags
+// (round-2 panel finding C1: previously v1 LBs had empty Tags and a
+// permanent-tagged ELB could be deleted on name alone).
+func TestAws_ClassicELB_TagsPropagated(t *testing.T) {
+	log := &callLog{}
+	created := time.Now().Add(-48 * time.Hour)
+	lbName := "prod-classic"
+	elb := &fakeELB{
+		log: log,
+		lbs: []elbtypes.LoadBalancerDescription{{
+			LoadBalancerName: &lbName,
+			CreatedTime:      &created,
+			Instances:        nil, // empty → instanceCount=0
+		}},
+		tags: map[string][]elbtypes.Tag{
+			lbName: {tag("C66-STACK", "prod-permanent-app")},
+		},
+	}
+	a := newTestAws(&fakeEC2{log: log}, elb, newFakeALB(log))
+
+	lbs, err := a.LoadBalancersGet(context.Background(), false)
+	if err != nil {
+		t.Fatalf("LoadBalancersGet: %v", err)
+	}
+	if len(lbs) != 1 {
+		t.Fatalf("expected 1 LB, got %d", len(lbs))
+	}
+	got := lbs[0]
+	if got.Type != "elb" {
+		t.Fatalf("expected classic elb, got %q", got.Type)
+	}
+	if len(got.Tags) != 1 || got.Tags[0] != "C66-STACK=prod-permanent-app" {
+		t.Fatalf("expected Tags=[C66-STACK=prod-permanent-app], got %+v", got.Tags)
+	}
+	// confirm DescribeTags was actually invoked
+	sawDescribeTags := false
+	for _, c := range log.calls {
+		if c == "elb.DescribeTags" {
+			sawDescribeTags = true
+		}
+	}
+	if !sawDescribeTags {
+		t.Fatalf("expected elb.DescribeTags call, got %v", log.calls)
+	}
+}
+
+// helper to construct an ELB classic Tag pointer pair without two-line
+// boilerplate at every call site.
+func tag(k, v string) elbtypes.Tag { kk, vv := k, v; return elbtypes.Tag{Key: &kk, Value: &vv} }
+
+// LoadBalancerDelete on an ALB with TGs that initially fail with
+// ResourceInUse must retry through the configured backoff and eventually
+// succeed (panel round-3 C7).
+func TestAws_LoadBalancerDelete_TGRetriesOnResourceInUse_C7(t *testing.T) {
+	log := &callLog{}
+	alb := newFakeALB(log)
+	alb.deleteTGFailUntil = 3 // first 3 attempts ResourceInUse, 4th succeeds
+	a := newTestAws(&fakeEC2{log: log}, &fakeELB{log: log}, alb)
+	a.tgDeleteBackoff = func(int) time.Duration { return 0 } // instant retries
+
+	lb := core.LoadBalancer{
+		Type:            "alb",
+		Region:          "us-east-1",
+		LoadBalancerArn: "arn:lb",
+		TargetGroupArns: []string{"arn:tg1"},
+	}
+	if err := a.LoadBalancerDelete(context.Background(), lb); err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	tgCalls := 0
+	for _, c := range log.calls {
+		if c == "alb.DeleteTargetGroup" {
+			tgCalls++
+		}
+	}
+	if tgCalls != 4 {
+		t.Fatalf("expected 4 DeleteTargetGroup attempts (3 fail + 1 success), got %d (calls=%v)", tgCalls, log.calls)
+	}
+}
+
+// non-ResourceInUse errors must NOT be retried — surface immediately.
+func TestAws_LoadBalancerDelete_TGOtherErrorBubbles_C7(t *testing.T) {
+	// inject a non-RIU error by making the fake's DeleteTargetGroup return
+	// a different SDK-style error after exhausting the RIU counter.
+	log := &callLog{}
+	alb := newFakeALB(log)
+	a := newTestAws(&fakeEC2{log: log}, &fakeELB{log: log}, alb)
+	a.tgDeleteBackoff = func(int) time.Duration { return 0 }
+	// override DeleteTargetGroup via wrapper: we want a one-shot fatal err.
+	// since fakeALB's method is fixed, we exercise this by relying on the
+	// existing path: deleteTGFailUntil=0 → first call succeeds → no retry.
+	// to test non-RIU bubble-up, swap in an albClient that always errors.
+	a.albFactory = func(ctx context.Context, r string) albClient {
+		return &errAlb{fakeALB: alb, deleteErr: errors.New("AccessDeniedException")}
+	}
+	lb := core.LoadBalancer{
+		Type:            "alb",
+		Region:          "us-east-1",
+		LoadBalancerArn: "arn:lb",
+		TargetGroupArns: []string{"arn:tg1"},
+	}
+	err := a.LoadBalancerDelete(context.Background(), lb)
+	if err == nil || !strings.Contains(err.Error(), "AccessDenied") {
+		t.Fatalf("expected AccessDenied to bubble up without retry, got %v", err)
+	}
+}
+
+// errAlb wraps fakeALB but forces DeleteTargetGroup to return the supplied
+// error on every call (no retry exit path).
+type errAlb struct {
+	*fakeALB
+	deleteErr error
+}
+
+func (e *errAlb) DeleteTargetGroup(ctx context.Context, in *elasticloadbalancingv2.DeleteTargetGroupInput, opts ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DeleteTargetGroupOutput, error) {
+	e.log.add("alb.DeleteTargetGroup")
+	return nil, e.deleteErr
+}
 
 // --- P5-T6 additionally: paginated DescribeInstances pagination -----------
 

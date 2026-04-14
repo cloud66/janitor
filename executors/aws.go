@@ -60,6 +60,18 @@ type Aws struct {
 	albFactory func(ctx context.Context, region string) albClient
 	// regionsOverride allows tests to shrink the region list.
 	regionsOverride []string
+	// tgDeleteBackoff overrides the per-attempt delay between
+	// DeleteTargetGroup retries. defaults to 1s/2s/4s/8s/16s/32s; tests pass
+	// a near-zero function so the retry loop completes instantly.
+	tgDeleteBackoff func(attempt int) time.Duration
+}
+
+// tgDeleteBackoffFor returns the delay before retry attempt N (0-indexed).
+func (a Aws) tgDeleteBackoffFor(attempt int) time.Duration {
+	if a.tgDeleteBackoff != nil {
+		return a.tgDeleteBackoff(attempt)
+	}
+	return time.Duration(1<<attempt) * time.Second
 }
 
 // cached AWS credentials provider. config.LoadDefaultConfig walks env /
@@ -126,7 +138,10 @@ func mapEC2State(name string) string {
 	case "running":
 		return "RUNNING"
 	default:
-		return "RUNNING"
+		// unknown/future state — caller should still count this instance as
+		// live (fail-safe), but the explicit UNKNOWN label lets operators
+		// grep for it instead of silently masquerading as RUNNING.
+		return "UNKNOWN"
 	}
 }
 
@@ -203,6 +218,9 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 					// map real EC2 state so downstream code (e.g. classic ELB
 					// InstanceCount) can exclude terminated/shutting-down.
 					state := mapEC2State(string(instance.State.Name))
+					if state == "UNKNOWN" {
+						core.Warnf(ctx, "instance %s in %s has unknown EC2 state %q — counting as live for safety", vendorID, region, instance.State.Name)
+					}
 					if state != "TERMINATED" && state != "SHUTTING-DOWN" {
 						tags := awsTagsToStrings(instance.Tags)
 						results = append(results, core.Server{VendorID: vendorID, Name: name, Age: age, Region: region, State: state, Tags: tags})
@@ -532,7 +550,7 @@ func (a Aws) LoadBalancerDelete(ctx context.Context, loadBalancer core.LoadBalan
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
-				case <-time.After(time.Duration(1<<attempt) * time.Second):
+				case <-time.After(a.tgDeleteBackoffFor(attempt)):
 				}
 			}
 			if lastErr != nil {

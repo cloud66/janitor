@@ -46,6 +46,35 @@ func withFlags(t *testing.T, mock bool, normal, long float64) {
 	})
 }
 
+// --- requireYesGate tests (round-3 C9) ---
+
+func TestRequireYesGate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		desc       string
+		mock, yes  bool
+		wantRefuse bool
+	}{
+		{"mock=true,  yes=false → allow (dry-run)", true, false, false},
+		{"mock=true,  yes=true  → allow (dry-run)", true, true, false},
+		{"mock=false, yes=true  → allow (live opt-in)", false, true, false},
+		{"mock=false, yes=false → REFUSE (the safety case)", false, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			t.Parallel()
+			msg := requireYesGate(tt.mock, tt.yes)
+			refused := msg != ""
+			if refused != tt.wantRefuse {
+				t.Errorf("requireYesGate(mock=%v,yes=%v): refused=%v want=%v (msg=%q)", tt.mock, tt.yes, refused, tt.wantRefuse, msg)
+			}
+			if refused && !strings.Contains(msg, "--yes") {
+				t.Errorf("refusal message must mention --yes flag, got %q", msg)
+			}
+		})
+	}
+}
+
 // --- isPermanent tests ---
 
 func TestIsPermanent_NameContainsPermanent(t *testing.T) {
@@ -305,8 +334,35 @@ func TestDeleteServers_Classification(t *testing.T) {
 		},
 	}
 
+	// add round-3 C9 cases: Age<=0 must skip with WARN before any
+	// LONG/NORM predicate runs.
+	tests = append(tests,
+		struct {
+			desc           string
+			cloud          string
+			server         core.Server
+			expectCategory string
+		}{
+			desc:           "Age=0 skipped with WARN (malformed Created)",
+			cloud:          "aws",
+			server:         core.Server{Name: "long-name-here", Age: 0, Region: "us", State: "RUNNING"},
+			expectCategory: "WARN",
+		},
+		struct {
+			desc           string
+			cloud          string
+			server         core.Server
+			expectCategory string
+		}{
+			desc:           "Age<0 skipped with WARN (clock skew)",
+			cloud:          "aws",
+			server:         core.Server{Name: "my-server", Age: -1.5, Region: "us", State: "RUNNING"},
+			expectCategory: "WARN",
+		},
+	)
+
 	// all possible category tags — used for negative assertions
-	allCategories := []string{"PERM", "SMPL", "LONG", "NORM"}
+	allCategories := []string{"PERM", "SMPL", "LONG", "NORM", "WARN"}
 
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
@@ -332,6 +388,45 @@ func TestDeleteServers_Classification(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Age<=0 LB skip — round-3 C9 defense-in-depth coverage.
+func TestDeleteLoadBalancers_ZeroAgeSkippedWARN(t *testing.T) {
+	withFlags(t, true, 0.38, 5.0)
+	lbs := []core.LoadBalancer{
+		// would normally be DEAD (0 instances, age 0) — must skip with WARN
+		{Name: "should-be-warn", Age: 0, InstanceCount: 0, Region: "us", Type: "alb"},
+		// negative age (clock skew) — same WARN treatment
+		{Name: "negative-age", Age: -0.5, InstanceCount: 0, Region: "us", Type: "alb"},
+	}
+	got := captureOutput(t, func() { deleteLoadBalancers(context.Background(), lbs) })
+	if !strings.Contains(got, "] [WARN] [") {
+		t.Errorf("expected WARN state tag, got %q", got)
+	}
+	if strings.Contains(got, "] [DEAD] [") {
+		t.Errorf("Age<=0 must NOT be classified DEAD, got %q", got)
+	}
+}
+
+// Volume sample-tag + Age<=0 — round-3 C9 coverage of both new branches.
+func TestDeleteVolumes_SampleTagAndZeroAgeSkipped(t *testing.T) {
+	withFlags(t, true, 0.38, 5.0)
+	volumes := []core.Volume{
+		// sample-tagged unattached old volume — must be skipped (sample tag)
+		{Name: "sample-vol", Age: 10, Region: "us", Attached: false, Tags: []string{"C66-STACK=maestro-sample-prd"}},
+		// Age=0 unattached — must be skipped (unknown age)
+		{Name: "zero-age-vol", Age: 0, Region: "us", Attached: false},
+	}
+	got := captureOutput(t, func() { deleteVolumes(context.Background(), volumes) })
+	if !strings.Contains(got, "skipped (sample tag)") {
+		t.Errorf("expected sample-tag skip line, got %q", got)
+	}
+	if !strings.Contains(got, "unknown age") {
+		t.Errorf("expected unknown-age skip line for Age=0 volume, got %q", got)
+	}
+	if strings.Contains(got, "Mock deleted!") {
+		t.Errorf("nothing should be deleted, got %q", got)
 	}
 }
 
