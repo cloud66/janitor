@@ -53,6 +53,75 @@ func (d DigitalOcean) ServerDelete(ctx context.Context, server core.Server) erro
 	return nil
 }
 
+// LoadBalancersGet returns all DigitalOcean load balancers with droplet counts
+func (d DigitalOcean) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBalancer, error) {
+	client := d.client(ctx)
+
+	// collect all load balancers with pagination
+	allLBs := []godo.LoadBalancer{}
+	opt := &godo.ListOptions{}
+	for {
+		lbs, resp, err := client.LoadBalancers.List(ctx, opt)
+		if err != nil {
+			return nil, err
+		}
+		allLBs = append(allLBs, lbs...)
+
+		// break at the last page
+		if resp.Links == nil || resp.Links.IsLastPage() {
+			break
+		}
+
+		page, err := resp.Links.CurrentPage()
+		if err != nil {
+			return nil, err
+		}
+		opt.Page = page + 1
+	}
+
+	// map all load balancers to core.LoadBalancer
+	result := make([]core.LoadBalancer, 0, len(allLBs))
+	for _, lb := range allLBs {
+		// parse RFC3339 creation timestamp; skip age calc if empty
+		var age float64
+		if lb.Created != "" {
+			createdAt, err := time.Parse(time.RFC3339, lb.Created)
+			if err != nil {
+				return nil, err
+			}
+			age = time.Now().Sub(createdAt).Hours() / 24.0
+		}
+
+		// instance count = explicit droplet IDs; tag-based LBs resolve droplets
+		// server-side and aren't reflected in DropletIDs, so count may be 0 for those
+		instanceCount := len(lb.DropletIDs)
+
+		region := ""
+		if lb.Region != nil {
+			region = lb.Region.Slug
+		}
+
+		result = append(result, core.LoadBalancer{
+			Name:            lb.Name,
+			Age:             age,
+			InstanceCount:   instanceCount,
+			Region:          region,
+			Type:            "do-lb",
+			Tags:            lb.Tags,
+			LoadBalancerArn: lb.ID, // repurpose ARN field for DO LB UUID
+		})
+	}
+
+	return result, nil
+}
+
+// LoadBalancerDelete removes the specified DigitalOcean load balancer
+func (d DigitalOcean) LoadBalancerDelete(ctx context.Context, loadBalancer core.LoadBalancer) error {
+	// the DO LB UUID is stored in LoadBalancerArn
+	_, err := d.client(ctx).LoadBalancers.Delete(ctx, loadBalancer.LoadBalancerArn)
+	return err
+}
+
 // SshKeysGet gets SSH keys
 func (d DigitalOcean) SshKeysGet(ctx context.Context) ([]core.SshKey, error) {
 	doAllSshKeys := []godo.Key{}
