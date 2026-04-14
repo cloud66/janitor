@@ -1,0 +1,7 @@
+{
+  "blocks": [
+    {"id": "blk-1", "label": "blk-detached", "date_created": "2024-01-01T00:00:00+00:00", "region": "ewr", "attached_to_instance": ""},
+    {"id": "blk-2", "label": "blk-attached", "date_created": "2024-01-01T00:00:00+00:00", "region": "ewr", "attached_to_instance": "inst-77"}
+  ],
+  "meta": {"total": 2, "links": {"next": "", "prev": ""}}
+}

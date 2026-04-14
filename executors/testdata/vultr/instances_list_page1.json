@@ -1,0 +1,6 @@
+{
+  "instances": [
+    {"id": "inst-1", "label": "vultr-1", "date_created": "2024-01-01T00:00:00+00:00", "region": "ewr", "tags": ["C66-STACK=demo-sample-prd"]}
+  ],
+  "meta": {"total": 2, "links": {"next": "cursor-page-2", "prev": ""}}
+}

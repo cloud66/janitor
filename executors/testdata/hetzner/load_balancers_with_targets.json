@@ -1,0 +1,27 @@
+{
+  "load_balancers": [
+    {
+      "id": 100,
+      "name": "lb-server-targets",
+      "created": "2024-01-01T00:00:00+00:00",
+      "location": {"id": 1, "name": "fsn1", "description": "", "country": "DE", "city": "Falkenstein", "latitude": 0, "longitude": 0, "network_zone": "eu-central"},
+      "labels": {},
+      "targets": [
+        {"type": "server", "server": {"id": 11}, "use_private_ip": false},
+        {"type": "server", "server": {"id": 12}, "use_private_ip": false},
+        {"type": "ip", "ip": {"ip": "1.2.3.4"}, "use_private_ip": false}
+      ]
+    },
+    {
+      "id": 101,
+      "name": "lb-label-selector-empty",
+      "created": "2024-01-01T00:00:00+00:00",
+      "location": {"id": 1, "name": "fsn1", "description": "", "country": "DE", "city": "Falkenstein", "latitude": 0, "longitude": 0, "network_zone": "eu-central"},
+      "labels": {},
+      "targets": [
+        {"type": "label_selector", "label_selector": {"selector": "app=web"}, "targets": null, "use_private_ip": false}
+      ]
+    }
+  ],
+  "meta": {"pagination": {"page": 1, "per_page": 25, "previous_page": null, "next_page": null, "last_page": 1, "total_entries": 2}}
+}

@@ -1,0 +1,15 @@
+{
+  "load_balancers": [
+    {
+      "id": "lb-uuid-1",
+      "name": "explicit-lb",
+      "created_at": "2024-01-01T00:00:00Z",
+      "droplet_ids": [10, 20, 30],
+      "region": {"slug": "nyc3"},
+      "tag": "",
+      "tags": []
+    }
+  ],
+  "links": {},
+  "meta": {"total": 1}
+}

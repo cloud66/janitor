@@ -1,0 +1,22 @@
+{
+  "volumes": [
+    {
+      "id": "vol-1",
+      "name": "orphan-vol",
+      "created_at": "2024-01-01T00:00:00Z",
+      "region": {"slug": "nyc3"},
+      "droplet_ids": [],
+      "tags": []
+    },
+    {
+      "id": "vol-2",
+      "name": "attached-vol",
+      "created_at": "2024-01-01T00:00:00Z",
+      "region": {"slug": "nyc3"},
+      "droplet_ids": [42],
+      "tags": ["env=prod"]
+    }
+  ],
+  "links": {},
+  "meta": {"total": 2}
+}

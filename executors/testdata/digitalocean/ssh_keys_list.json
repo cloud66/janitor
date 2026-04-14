@@ -1,0 +1,8 @@
+{
+  "ssh_keys": [
+    {"id": 1, "name": "c66-key-a", "fingerprint": "aa"},
+    {"id": 2, "name": "user-key", "fingerprint": "bb"}
+  ],
+  "links": {},
+  "meta": {"total": 2}
+}

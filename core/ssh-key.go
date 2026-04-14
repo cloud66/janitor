@@ -5,7 +5,8 @@ type SshKey struct {
 	Name     string
 }
 
-// SshKeyNameSorter sorts SSH keys by Name
+// SshKeySorter sorts SSH keys by VendorID ascending (lexicographic string compare).
+// B2: this is a lex sort, not a numeric one — "v10" < "v2".
 type SshKeySorter []SshKey
 
 func (s SshKeySorter) Len() int           { return len(s) }

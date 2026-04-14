@@ -1,6 +1,6 @@
 package core
 
-import "golang.org/x/net/context"
+import "context"
 
 // ExecutorInterface base for cloud actions
 type ExecutorInterface interface {

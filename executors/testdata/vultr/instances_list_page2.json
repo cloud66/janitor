@@ -1,0 +1,6 @@
+{
+  "instances": [
+    {"id": "inst-2", "label": "vultr-2", "date_created": "2024-02-01T00:00:00+00:00", "region": "ewr", "tags": []}
+  ],
+  "meta": {"total": 2, "links": {"next": "", "prev": ""}}
+}

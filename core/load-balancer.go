@@ -13,7 +13,8 @@ type LoadBalancer struct {
 	ListenerArns    []string
 }
 
-// LoadBalancerSorter sorts load balancers by name
+// LoadBalancerSorter sorts load balancers by age (descending — oldest first).
+// B1: previous doc said "by name"; the Less implementation sorts by Age desc.
 type LoadBalancerSorter []LoadBalancer
 
 func (s LoadBalancerSorter) Len() int           { return len(s) }

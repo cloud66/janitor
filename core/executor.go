@@ -1,60 +1,53 @@
 package core
 
 import (
-	"errors"
-
-	"golang.org/x/net/context"
+	"context"
 )
 
-// Executor base for cloud actions
+// Executor is a legacy no-op base retained only for backwards source-level
+// compatibility. New executors should NOT embed this — instead they implement
+// ExecutorInterface directly, which gives compile-time coverage.
 type Executor struct{}
 
-// ServersGet gets servers
-func (e *Executor) ServersGet(context context.Context, vendorIDs []string, regions []string) ([]Server, error) {
-	return nil, errors.New("action not available")
+// Each method returns ErrUnsupported so callers can detect unsupported
+// operations via errors.Is(err, ErrUnsupported).
+
+func (e *Executor) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]Server, error) {
+	return nil, ErrUnsupported
 }
 
-// ServerDelete deletes a server
 func (e *Executor) ServerDelete(ctx context.Context, server Server) error {
-	return errors.New("action not available")
+	return ErrUnsupported
 }
 
-// ServerStop stops a server
 func (e *Executor) ServerStop(ctx context.Context, server Server) error {
-	return errors.New("action not available")
+	return ErrUnsupported
 }
 
-// ServerStart starts a server
 func (e *Executor) ServerStart(ctx context.Context, server Server) error {
-	return errors.New("action not available")
+	return ErrUnsupported
 }
 
-// LoadBalancersGet gets load balancers
 func (e *Executor) LoadBalancersGet(ctx context.Context, flagMock bool) ([]LoadBalancer, error) {
-	return nil, errors.New("action not available")
+	return nil, ErrUnsupported
 }
 
-// LoadBalancerDelete deletes a load balancer
 func (e *Executor) LoadBalancerDelete(ctx context.Context, loadBalancer LoadBalancer) error {
-	return errors.New("action not available")
+	return ErrUnsupported
 }
 
-// SshKeysGet gets SSH keys
 func (e *Executor) SshKeysGet(ctx context.Context) ([]SshKey, error) {
-	return nil, errors.New("action not available")
+	return nil, ErrUnsupported
 }
 
-// SshKeyDelete deletes an SSH key
 func (e *Executor) SshKeyDelete(ctx context.Context, sshKey SshKey) error {
-	return errors.New("action not available")
+	return ErrUnsupported
 }
 
-// VolumesGet gets volumes
 func (e *Executor) VolumesGet(ctx context.Context) ([]Volume, error) {
-	return nil, errors.New("action not available")
+	return nil, ErrUnsupported
 }
 
-// VolumeDelete deletes a volume
 func (e *Executor) VolumeDelete(ctx context.Context, volume Volume) error {
-	return errors.New("action not available")
+	return ErrUnsupported
 }
