@@ -35,20 +35,20 @@ func newDOCtx(ts *httptest.Server) context.Context {
 
 // TestDigitalOcean_ServersGet_Pagination covers B11 fix: droplets span two pages.
 func TestDigitalOcean_ServersGet_Pagination(t *testing.T) {
+	// pre-read fixtures on the test goroutine so handler goroutines never call t.Fatal
+	page1 := readFixture(t, "digitalocean/droplets_list_page1.json")
+	page2 := readFixture(t, "digitalocean/droplets_list_page2.json")
 	var calls int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/droplets", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 		page := r.URL.Query().Get("page")
 		if page == "" || page == "1" {
-			// rewrite the "next" link to point at this test server so godo can follow it
-			b := readFixture(t, "digitalocean/droplets_list_page1.json")
 			// host-agnostic: godo only extracts ?page=N from the URL
-			w.Write(b)
+			w.Write(page1)
 			return
 		}
-		b := readFixture(t, "digitalocean/droplets_list_page2.json")
-		w.Write(b)
+		w.Write(page2)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -70,9 +70,10 @@ func TestDigitalOcean_ServersGet_Pagination(t *testing.T) {
 // happy-path mapping.
 func TestDigitalOcean_LoadBalancersGet(t *testing.T) {
 	t.Run("explicit droplets", func(t *testing.T) {
+		body := readFixture(t, "digitalocean/load_balancers_explicit_droplets.json")
 		mux := http.NewServeMux()
 		mux.HandleFunc("/v2/load_balancers", func(w http.ResponseWriter, r *http.Request) {
-			w.Write(readFixture(t, "digitalocean/load_balancers_explicit_droplets.json"))
+			w.Write(body)
 		})
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
@@ -93,9 +94,15 @@ func TestDigitalOcean_LoadBalancersGet(t *testing.T) {
 	})
 
 	t.Run("tag-based lb returns zero instance count (documents current behavior)", func(t *testing.T) {
+		// PINNED SMELL: DO's /v2/load_balancers response only carries droplet_ids
+		// when the LB was created with explicit droplets. Tag-based LBs omit the
+		// list, so InstanceCount=0 is what the API gives us — a true count would
+		// require a second /v2/droplets?tag=<x> call per LB. Accepted until the
+		// resolver path is implemented; update this test if that changes.
+		body := readFixture(t, "digitalocean/load_balancers_tag_based.json")
 		mux := http.NewServeMux()
 		mux.HandleFunc("/v2/load_balancers", func(w http.ResponseWriter, r *http.Request) {
-			w.Write(readFixture(t, "digitalocean/load_balancers_tag_based.json"))
+			w.Write(body)
 		})
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
@@ -191,9 +198,10 @@ func TestDigitalOcean_LoadBalancerDelete(t *testing.T) {
 }
 
 func TestDigitalOcean_VolumesGet(t *testing.T) {
+	body := readFixture(t, "digitalocean/volumes_unattached.json")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/volumes", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(readFixture(t, "digitalocean/volumes_unattached.json"))
+		w.Write(body)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -224,9 +232,10 @@ func TestDigitalOcean_VolumesGet(t *testing.T) {
 }
 
 func TestDigitalOcean_SshKeysGet(t *testing.T) {
+	body := readFixture(t, "digitalocean/ssh_keys_list.json")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/account/keys", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(readFixture(t, "digitalocean/ssh_keys_list.json"))
+		w.Write(body)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()

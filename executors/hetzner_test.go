@@ -24,9 +24,10 @@ func newHetznerCtx(ts *httptest.Server) context.Context {
 }
 
 func TestHetzner_LoadBalancersGet_TargetTypes(t *testing.T) {
+	body := readFixture(t, "hetzner/load_balancers_with_targets.json")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/load_balancers", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(readFixture(t, "hetzner/load_balancers_with_targets.json"))
+		w.Write(body)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -49,7 +50,12 @@ func TestHetzner_LoadBalancersGet_TargetTypes(t *testing.T) {
 	if got := byName["lb-server-targets"].InstanceCount; got != 3 {
 		t.Errorf("server+ip LB: want 3 instances, got %d", got)
 	}
-	// label selector with empty Targets: counts as 1 (pins current +1 behavior)
+	// PINNED SMELL: label-selector LBs report an empty Targets list from the
+	// Hetzner API even when backends exist. The executor currently returns +1
+	// as a conservative fallback (don't treat as "empty → delete"). A proper
+	// fix would resolve the label selector against /v1/servers?label_selector=
+	// to get the real count. Until then we pin the +1 so a naive refactor
+	// doesn't silently change it; revisit when the resolver lands.
 	if got := byName["lb-label-selector-empty"].InstanceCount; got != 1 {
 		t.Errorf("empty label-selector LB: want 1 (pins +1 fallback), got %d", got)
 	}
@@ -120,9 +126,10 @@ func TestHetzner_LabelsToTags_StableOrder(t *testing.T) {
 }
 
 func TestHetzner_ServersGet(t *testing.T) {
+	body := readFixture(t, "hetzner/servers_list.json")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/servers", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(readFixture(t, "hetzner/servers_list.json"))
+		w.Write(body)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -147,9 +154,10 @@ func TestHetzner_ServersGet(t *testing.T) {
 // the API returns a zero-value `created` (null), the LB is still included in
 // the result with Age=0 and a WARN line is surfaced via the WarnWriter sink.
 func TestHetzner_LoadBalancersGet_MissingCreated_B10(t *testing.T) {
+	body := readFixture(t, "hetzner/load_balancers_missing_created.json")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/load_balancers", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(readFixture(t, "hetzner/load_balancers_missing_created.json"))
+		w.Write(body)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
@@ -182,6 +190,8 @@ func TestHetzner_LoadBalancersGet_MissingCreated_B10(t *testing.T) {
 // across meta.pagination.next_page is exercised end-to-end. Regression guard:
 // a future refactor that skips subsequent pages would drop LBs silently.
 func TestHetzner_LoadBalancersGet_Pagination(t *testing.T) {
+	page1 := readFixture(t, "hetzner/load_balancers_page1.json")
+	page2 := readFixture(t, "hetzner/load_balancers_page2.json")
 	var calls int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/load_balancers", func(w http.ResponseWriter, r *http.Request) {
@@ -191,10 +201,10 @@ func TestHetzner_LoadBalancersGet_Pagination(t *testing.T) {
 		// hcloud advances via ?page=N query param; page defaults to 1 when absent
 		page := r.URL.Query().Get("page")
 		if page == "" || page == "1" {
-			w.Write(readFixture(t, "hetzner/load_balancers_page1.json"))
+			w.Write(page1)
 			return
 		}
-		w.Write(readFixture(t, "hetzner/load_balancers_page2.json"))
+		w.Write(page2)
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()

@@ -370,6 +370,56 @@ func TestAws_ServersGet_AllRegionsFail_B6(t *testing.T) {
 	}
 }
 
+// TestAws_LoadBalancersGet_AllRegionsFail_MultiRegion_B6 exercises the
+// cross-region aggregation path with N=2 regions. The single-region sibling
+// above proves "only region errors → surface error" but not "errors from ALL
+// of N>1 regions are joined and surfaced." This test closes that gap.
+func TestAws_LoadBalancersGet_AllRegionsFail_MultiRegion_B6(t *testing.T) {
+	log := &callLog{}
+	elb := &fakeELB{log: log, describeErr: errors.New("ELBAccessDenied")}
+	alb := newFakeALB(log)
+	alb.lbErr = errors.New("ALBAccessDenied")
+	a := Aws{
+		regionsOverride: []string{"us-east-1", "eu-west-1"},
+		ec2Factory:      func(ctx context.Context, r string) ec2Client { return &fakeEC2{log: log} },
+		elbFactory:      func(ctx context.Context, r string) elbClient { return elb },
+		albFactory:      func(ctx context.Context, r string) albClient { return alb },
+	}
+
+	_, err := a.LoadBalancersGet(context.Background(), true)
+	if err == nil {
+		t.Fatal("expected error when every region in a multi-region set fails, got nil")
+	}
+	// errors.Join must surface at least one of the region errors. We don't
+	// pin exact ordering because per-region iteration order isn't contractual,
+	// but at least one underlying cause must be visible.
+	msg := err.Error()
+	if !strings.Contains(msg, "AccessDenied") {
+		t.Fatalf("expected aggregated error to mention at least one region's AccessDenied, got %q", msg)
+	}
+}
+
+// TestAws_ServersGet_AllRegionsFail_MultiRegion_B6 mirrors the LB variant for
+// ServersGet, covering the same errors.Join aggregation path over EC2.
+func TestAws_ServersGet_AllRegionsFail_MultiRegion_B6(t *testing.T) {
+	log := &callLog{}
+	ec2f := &fakeEC2{log: log, describeErr: errors.New("EC2AccessDenied")}
+	a := Aws{
+		regionsOverride: []string{"us-east-1", "eu-west-1"},
+		ec2Factory:      func(ctx context.Context, r string) ec2Client { return ec2f },
+		elbFactory:      func(ctx context.Context, r string) elbClient { return &fakeELB{log: log} },
+		albFactory:      func(ctx context.Context, r string) albClient { return newFakeALB(log) },
+	}
+
+	_, err := a.ServersGet(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("expected error when every region in a multi-region set fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "AccessDenied") {
+		t.Fatalf("expected aggregated error to mention AccessDenied, got %q", err.Error())
+	}
+}
+
 // --- P5-T5: AddTags error handling (B7) ------------------------------------
 
 func TestAws_OrphanTG_AddTagsError_B7(t *testing.T) {

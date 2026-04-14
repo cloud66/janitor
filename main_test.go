@@ -64,7 +64,12 @@ func TestIsPermanent_NameContainsPermanent(t *testing.T) {
 		{"plain name no match", "my-server", nil, false},
 		{"prefix perm not full word", "perm-server", nil, false},
 		{"empty name", "", nil, false},
-		// B4: pins current greedy substring; fix tracked as B4.
+		// B4 (won't-fix): isPermanent uses strings.Contains, so names like
+		// "supermanent-name" match by coincidence. Accepted because no known
+		// fleet resource relies on this coincidence and tightening to word-
+		// boundary matching would risk false negatives on hyphen/underscore
+		// variants that real fleets DO use ("is-permanent", "permanent_box").
+		// Pinned so a naive "fix" doesn't silently change isPermanent semantics.
 		{"substring false positive supermanent", "supermanent-name", nil, true},
 	}
 
@@ -100,7 +105,8 @@ func TestIsPermanent_TagContainsPermanent(t *testing.T) {
 		{"empty tags no match", "my-server", []string{}, false},
 		// match in name even if tags don't match
 		{"name match overrides tag miss", "permanent-box", []string{"lifecycle=temporary"}, true},
-		// B4: pins current greedy substring; fix tracked as B4.
+		// B4 (won't-fix, tag variant): same greedy-substring rationale as above
+		// — tag values containing "permanent" match even when not exact. Pinned.
 		{"tag value permanent-core in C66 key", "my-server", []string{"env=prod", "C66=permanent-core"}, true},
 	}
 
@@ -142,7 +148,11 @@ func TestHasLongName(t *testing.T) {
 		{"nil tags", "my-server", nil, false},
 		// name match overrides tag miss
 		{"long in name, no tag match", "long-box", []string{"env=prod"}, true},
-		// B4: pins current greedy substring; fix tracked as B4.
+		// B4 (won't-fix, hasLongName variant): hasLongName is a substring check
+		// on "long", so "prolonged" and "belonging" match coincidentally. Same
+		// rationale as isPermanent B4 pins: real fleets use "long-running",
+		// "long_lived" etc. and word-boundary tightening would create false
+		// negatives. Pinned to prevent silent semantic drift.
 		{"substring false positive prolonged", "prolonged-task", nil, true},
 		{"substring false positive belonging", "belonging", nil, true},
 	}

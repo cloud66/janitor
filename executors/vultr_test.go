@@ -1,6 +1,7 @@
 package executors
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,8 @@ func newVultrCtx(ts *httptest.Server) context.Context {
 // TestVultr_ServersGet_CursorPagination confirms cursor-based pagination via
 // meta.Links.Next: two fixtures, two calls, concatenated result.
 func TestVultr_ServersGet_CursorPagination(t *testing.T) {
+	page1 := readFixture(t, "vultr/instances_list_page1.json")
+	page2 := readFixture(t, "vultr/instances_list_page2.json")
 	var calls int32
 	// vultr path for instances — use prefix handler since exact path may vary
 	handler := func(w http.ResponseWriter, r *http.Request) {
@@ -31,10 +34,10 @@ func TestVultr_ServersGet_CursorPagination(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		cursor := r.URL.Query().Get("cursor")
 		if cursor == "" {
-			w.Write(readFixture(t, "vultr/instances_list_page1.json"))
+			w.Write(page1)
 			return
 		}
-		w.Write(readFixture(t, "vultr/instances_list_page2.json"))
+		w.Write(page2)
 	}
 	ts := httptest.NewServer(http.HandlerFunc(handler))
 	defer ts.Close()
@@ -54,12 +57,13 @@ func TestVultr_ServersGet_CursorPagination(t *testing.T) {
 // TestVultr_LoadBalancersGet_NilInstances ensures a LB with instances=null
 // resolves to InstanceCount=0 without panicking.
 func TestVultr_LoadBalancersGet_NilInstances(t *testing.T) {
+	body := readFixture(t, "vultr/load_balancers_list.json")
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "load-balancers") {
 			http.NotFound(w, r)
 			return
 		}
-		w.Write(readFixture(t, "vultr/load_balancers_list.json"))
+		w.Write(body)
 	}
 	ts := httptest.NewServer(http.HandlerFunc(handler))
 	defer ts.Close()
@@ -110,12 +114,13 @@ func TestVultr_LoadBalancerDelete_IDPassthrough(t *testing.T) {
 // TestVultr_VolumesGet_NoTagsGap documents that Vultr block storage has no
 // tags: Tags is always nil.
 func TestVultr_VolumesGet_NoTagsGap(t *testing.T) {
+	body := readFixture(t, "vultr/blocks_list.json")
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "blocks") {
 			http.NotFound(w, r)
 			return
 		}
-		w.Write(readFixture(t, "vultr/blocks_list.json"))
+		w.Write(body)
 	}
 	ts := httptest.NewServer(http.HandlerFunc(handler))
 	defer ts.Close()
@@ -157,7 +162,11 @@ func TestVultr_ServersGet_MalformedDate_B10(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(handler))
 	defer ts.Close()
 
-	servers, err := Vultr{}.ServersGet(newVultrCtx(ts), nil, nil)
+	// capture warn output so we can assert parity with the DO/Hetzner B10 tests
+	warnBuf := &bytes.Buffer{}
+	ctx := context.WithValue(newVultrCtx(ts), core.WarnWriterKey, warnBuf)
+
+	servers, err := Vultr{}.ServersGet(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("malformed date must not abort list: %v", err)
 	}
@@ -166,5 +175,8 @@ func TestVultr_ServersGet_MalformedDate_B10(t *testing.T) {
 	}
 	if servers[0].Age != 0 {
 		t.Errorf("want Age=0 on parse failure, got %v", servers[0].Age)
+	}
+	if !strings.Contains(warnBuf.String(), "[WARN]") {
+		t.Errorf("expected WARN log in sink, got %q", warnBuf.String())
 	}
 }
