@@ -38,6 +38,9 @@ type fakeEC2 struct {
 	describeErr   error
 	modifyErr     error
 	terminateErr  error
+	// enis is returned unfiltered, so the code under test must match addresses itself.
+	enis   []ec2types.NetworkInterface
+	eniErr error
 }
 
 func (f *fakeEC2) DescribeInstances(ctx context.Context, in *ec2.DescribeInstancesInput, opts ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
@@ -55,6 +58,14 @@ func (f *fakeEC2) DescribeInstances(ctx context.Context, in *ec2.DescribeInstanc
 		return &ec2.DescribeInstancesOutput{}, nil
 	}
 	return f.describePages[idx], nil
+}
+
+func (f *fakeEC2) DescribeNetworkInterfaces(ctx context.Context, in *ec2.DescribeNetworkInterfacesInput, opts ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	f.log.add("ec2.DescribeNetworkInterfaces")
+	if f.eniErr != nil {
+		return nil, f.eniErr
+	}
+	return &ec2.DescribeNetworkInterfacesOutput{NetworkInterfaces: f.enis}, nil
 }
 
 func (f *fakeEC2) ModifyInstanceAttribute(ctx context.Context, in *ec2.ModifyInstanceAttributeInput, opts ...func(*ec2.Options)) (*ec2.ModifyInstanceAttributeOutput, error) {
@@ -902,5 +913,154 @@ func TestAws_ELB_Pagination_B8(t *testing.T) {
 	}
 	if describeCount != 2 {
 		t.Fatalf("expected 2 DescribeLoadBalancers calls (page1 + page2), got %d", describeCount)
+	}
+}
+
+// --- ALB target liveness ----------------------------------------------------
+
+// albWithTargets builds a fake ALB with one 2-day-old LB and one target group holding targets.
+func albWithTargets(log *callLog, targets []elbv2types.TargetDescription) *fakeALB {
+	alb := newFakeALB(log)
+	lbArn, lbName, tgArn := "arn:alb:live", "alb-live", "arn:tg:live"
+	created := time.Now().Add(-48 * time.Hour)
+	alb.lbPages = []*elasticloadbalancingv2.DescribeLoadBalancersOutput{
+		{LoadBalancers: []elbv2types.LoadBalancer{
+			{LoadBalancerArn: &lbArn, LoadBalancerName: &lbName, CreatedTime: &created},
+		}},
+	}
+	alb.perLBTargetGroups[lbArn] = &elasticloadbalancingv2.DescribeTargetGroupsOutput{
+		TargetGroups: []elbv2types.TargetGroup{{TargetGroupArn: &tgArn}},
+	}
+	health := &elasticloadbalancingv2.DescribeTargetHealthOutput{}
+	for i := range targets {
+		health.TargetHealthDescriptions = append(health.TargetHealthDescriptions,
+			elbv2types.TargetHealthDescription{Target: &targets[i]})
+	}
+	alb.health[tgArn] = health
+	return alb
+}
+
+func albInstanceCount(t *testing.T, a Aws) int {
+	t.Helper()
+	lbs, err := a.LoadBalancersGet(context.Background(), true)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	for _, lb := range lbs {
+		if lb.Type == "alb" {
+			return lb.InstanceCount
+		}
+	}
+	t.Fatalf("no alb returned in %+v", lbs)
+	return 0
+}
+
+func instancePage(id string, state ec2types.InstanceStateName) *ec2.DescribeInstancesOutput {
+	attach := time.Now().Add(-48 * time.Hour)
+	return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{{
+		InstanceId:          aws.String(id),
+		State:               &ec2types.InstanceState{Name: state},
+		BlockDeviceMappings: []ec2types.InstanceBlockDeviceMapping{{Ebs: &ec2types.EbsInstanceBlockDevice{AttachTime: &attach}}},
+	}}}}}
+}
+
+func eniWithIP(ip string) ec2types.NetworkInterface {
+	return ec2types.NetworkInterface{
+		PrivateIpAddress:   aws.String(ip),
+		PrivateIpAddresses: []ec2types.NetworkInterfacePrivateIpAddress{{PrivateIpAddress: aws.String(ip)}},
+	}
+}
+
+// TestAws_ALB_InstanceCount_TargetLiveness pins that InstanceCount counts live backends, not
+// registered targets: AWS never deregisters dead IP targets, so dead LBs looked LIVE forever.
+func TestAws_ALB_InstanceCount_TargetLiveness(t *testing.T) {
+	ipTarget := func(ip string) elbv2types.TargetDescription {
+		return elbv2types.TargetDescription{Id: aws.String(ip), Port: aws.Int32(443), AvailabilityZone: aws.String("eu-west-2a")}
+	}
+	cases := []struct {
+		name    string
+		targets []elbv2types.TargetDescription
+		ec2     fakeEC2
+		want    int
+	}{
+		{
+			name:    "stale IP target with no ENI is dead",
+			targets: []elbv2types.TargetDescription{ipTarget("172.31.5.166")},
+			ec2:     fakeEC2{enis: []ec2types.NetworkInterface{eniWithIP("172.31.9.9")}},
+			want:    0,
+		},
+		{
+			name:    "IP target backed by an ENI is live",
+			targets: []elbv2types.TargetDescription{ipTarget("172.31.5.166")},
+			ec2:     fakeEC2{enis: []ec2types.NetworkInterface{eniWithIP("172.31.5.166")}},
+			want:    1,
+		},
+		{
+			name:    "same IP on two ports counts once",
+			targets: []elbv2types.TargetDescription{ipTarget("10.0.0.1"), {Id: aws.String("10.0.0.1"), Port: aws.Int32(80)}},
+			ec2:     fakeEC2{enis: []ec2types.NetworkInterface{eniWithIP("10.0.0.1")}},
+			want:    1,
+		},
+		{
+			name:    "secondary IP on an ENI is live",
+			targets: []elbv2types.TargetDescription{ipTarget("10.0.0.2")},
+			ec2: fakeEC2{enis: []ec2types.NetworkInterface{{
+				PrivateIpAddress: aws.String("10.0.0.1"),
+				PrivateIpAddresses: []ec2types.NetworkInterfacePrivateIpAddress{
+					{PrivateIpAddress: aws.String("10.0.0.1")}, {PrivateIpAddress: aws.String("10.0.0.2")},
+				},
+			}}},
+			want: 1,
+		},
+		{
+			name:    "ENI lookup failure marks count unknown",
+			targets: []elbv2types.TargetDescription{ipTarget("172.31.5.166")},
+			ec2:     fakeEC2{eniErr: errors.New("throttled")},
+			want:    -1,
+		},
+		{
+			name:    "IP target outside the VPC cannot be verified so counts as live",
+			targets: []elbv2types.TargetDescription{{Id: aws.String("203.0.113.7"), AvailabilityZone: aws.String("all")}},
+			want:    1,
+		},
+		{
+			name:    "IPv6 target cannot be verified so counts as live",
+			targets: []elbv2types.TargetDescription{{Id: aws.String("2001:db8::1"), AvailabilityZone: aws.String("eu-west-2a")}},
+			want:    1,
+		},
+		{
+			name:    "terminated instance target is dead",
+			targets: []elbv2types.TargetDescription{{Id: aws.String("i-dead")}},
+			ec2:     fakeEC2{describePages: []*ec2.DescribeInstancesOutput{instancePage("i-dead", ec2types.InstanceStateNameTerminated)}},
+			want:    0,
+		},
+		{
+			name:    "running instance target is live",
+			targets: []elbv2types.TargetDescription{{Id: aws.String("i-live")}},
+			ec2:     fakeEC2{describePages: []*ec2.DescribeInstancesOutput{instancePage("i-live", ec2types.InstanceStateNameRunning)}},
+			want:    1,
+		},
+		{
+			name:    "instance lookup failure marks count unknown",
+			targets: []elbv2types.TargetDescription{{Id: aws.String("i-live")}},
+			ec2:     fakeEC2{describeErr: errors.New("throttled")},
+			want:    -1,
+		},
+		{
+			name:    "lambda target cannot be verified so counts as live",
+			targets: []elbv2types.TargetDescription{{Id: aws.String("arn:aws:lambda:us-east-1:123:function:f")}},
+			want:    1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &callLog{}
+			ec2f := tc.ec2
+			ec2f.log = log
+			a := newTestAws(&ec2f, &fakeELB{log: log}, albWithTargets(log, tc.targets))
+			if got := albInstanceCount(t, a); got != tc.want {
+				t.Errorf("InstanceCount = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
