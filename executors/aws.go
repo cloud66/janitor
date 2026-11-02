@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +27,7 @@ import (
 // keeping it narrow lets tests inject fakes without wrapping the whole SDK.
 type ec2Client interface {
 	DescribeInstances(ctx context.Context, in *ec2.DescribeInstancesInput, opts ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
+	DescribeNetworkInterfaces(ctx context.Context, in *ec2.DescribeNetworkInterfacesInput, opts ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error)
 	ModifyInstanceAttribute(ctx context.Context, in *ec2.ModifyInstanceAttributeInput, opts ...func(*ec2.Options)) (*ec2.ModifyInstanceAttributeOutput, error)
 	TerminateInstances(ctx context.Context, in *ec2.TerminateInstancesInput, opts ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
 }
@@ -145,6 +148,11 @@ func mapEC2State(name string) string {
 	}
 }
 
+// isLiveEC2State reports whether a mapEC2State result still counts as a live server.
+func isLiveEC2State(state string) bool {
+	return state != "TERMINATED" && state != "SHUTTING-DOWN"
+}
+
 // ServersGet return all servers in account
 func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []string) ([]core.Server, error) {
 	results := make([]core.Server, 0, 0)
@@ -221,7 +229,7 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 					if state == "UNKNOWN" {
 						core.Warnf(ctx, "instance %s in %s has unknown EC2 state %q — counting as live for safety", vendorID, region, instance.State.Name)
 					}
-					if state != "TERMINATED" && state != "SHUTTING-DOWN" {
+					if isLiveEC2State(state) {
 						tags := awsTagsToStrings(instance.Tags)
 						results = append(results, core.Server{VendorID: vendorID, Name: name, Age: age, Region: region, State: state, Tags: tags})
 					}
@@ -243,6 +251,119 @@ func (a Aws) ServersGet(ctx context.Context, vendorIDs []string, regions []strin
 		return nil, fmt.Errorf("all regions failed: %w", errors.Join(regionErrs...))
 	}
 	return results, nil
+}
+
+// ec2FilterValueLimit is the max number of values EC2 accepts per filter.
+const ec2FilterValueLimit = 200
+
+// countLiveTargets counts ALB/NLB targets still backed by a live EC2 resource;
+// AWS never deregisters dead IP targets, so registration alone proves nothing.
+func (a Aws) countLiveTargets(ctx context.Context, region string, targets map[string]elasticloadbalancingv2types.TargetDescription) (int, error) {
+	var instanceIDs, ips []string
+	live := 0
+	for id, target := range targets {
+		ip := net.ParseIP(id)
+		outsideVPC := target.AvailabilityZone != nil && *target.AvailabilityZone == "all"
+		switch {
+		case strings.HasPrefix(id, "i-"):
+			instanceIDs = append(instanceIDs, id)
+		case ip != nil && ip.To4() != nil && !outsideVPC:
+			ips = append(ips, id)
+		default:
+			// lambda/ALB ARNs, out-of-VPC and IPv6 targets have no ENI lookup
+			// we can trust, so count them as live rather than risk deletion.
+			live++
+		}
+	}
+	if len(instanceIDs) == 0 && len(ips) == 0 {
+		return live, nil
+	}
+	client := a.ec2For(ctx, region)
+	liveInstances, err := liveInstanceCount(ctx, client, instanceIDs)
+	if err != nil {
+		return 0, err
+	}
+	liveIPs, err := liveIPCount(ctx, client, ips)
+	if err != nil {
+		return 0, err
+	}
+	return live + liveInstances + liveIPs, nil
+}
+
+// liveInstanceCount returns how many of instanceIDs are live; it filters on
+// instance-id because InstanceIds errors on IDs AWS has already forgotten.
+func liveInstanceCount(ctx context.Context, client ec2Client, instanceIDs []string) (int, error) {
+	wanted := make(map[string]bool, len(instanceIDs))
+	for _, id := range instanceIDs {
+		wanted[id] = true
+	}
+	live := make(map[string]bool)
+	for chunk := range slices.Chunk(instanceIDs, ec2FilterValueLimit) {
+		var nextToken *string
+		for {
+			out, err := client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+				Filters:   []ec2types.Filter{{Name: aws.String("instance-id"), Values: chunk}},
+				NextToken: nextToken,
+			})
+			if err != nil {
+				return 0, fmt.Errorf("DescribeInstances: %w", err)
+			}
+			for _, reservation := range out.Reservations {
+				for _, instance := range reservation.Instances {
+					if instance.InstanceId == nil || !wanted[*instance.InstanceId] {
+						continue
+					}
+					// a missing state is treated as live (fail-safe).
+					if instance.State != nil && !isLiveEC2State(mapEC2State(string(instance.State.Name))) {
+						continue
+					}
+					live[*instance.InstanceId] = true
+				}
+			}
+			if out.NextToken == nil || *out.NextToken == "" {
+				break
+			}
+			nextToken = out.NextToken
+		}
+	}
+	return len(live), nil
+}
+
+// liveIPCount returns how many of ips are held by an ENI in the region, which
+// covers EC2, ECS and other VPC backends and is released on termination.
+func liveIPCount(ctx context.Context, client ec2Client, ips []string) (int, error) {
+	wanted := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		wanted[ip] = true
+	}
+	found := make(map[string]bool)
+	for chunk := range slices.Chunk(ips, ec2FilterValueLimit) {
+		var nextToken *string
+		for {
+			out, err := client.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
+				Filters:   []ec2types.Filter{{Name: aws.String("addresses.private-ip-address"), Values: chunk}},
+				NextToken: nextToken,
+			})
+			if err != nil {
+				return 0, fmt.Errorf("DescribeNetworkInterfaces: %w", err)
+			}
+			for _, eni := range out.NetworkInterfaces {
+				if eni.PrivateIpAddress != nil && wanted[*eni.PrivateIpAddress] {
+					found[*eni.PrivateIpAddress] = true
+				}
+				for _, addr := range eni.PrivateIpAddresses {
+					if addr.PrivateIpAddress != nil && wanted[*addr.PrivateIpAddress] {
+						found[*addr.PrivateIpAddress] = true
+					}
+				}
+			}
+			if out.NextToken == nil || *out.NextToken == "" {
+				break
+			}
+			nextToken = out.NextToken
+		}
+	}
+	return len(found), nil
 }
 
 // LoadBalancersGet return all load balancers in account
@@ -415,9 +536,8 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					tgMarker = targetGroupOutput.NextMarker
 				}
 
-				// count unique instances across all target groups; on error,
-				// assume instances exist to avoid accidental deletion.
-				seenInstances := make(map[string]bool)
+				// collect unique targets across all target groups; any error leaves the count unknown (-1).
+				targets := make(map[string]elasticloadbalancingv2types.TargetDescription)
 				healthCheckFailed := false
 				for _, tgArn := range targetGroupArns {
 					tgArnCopy := tgArn
@@ -430,13 +550,18 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					}
 					for _, thd := range healthOutput.TargetHealthDescriptions {
 						if thd.Target != nil && thd.Target.Id != nil {
-							seenInstances[*thd.Target.Id] = true
+							targets[*thd.Target.Id] = *thd.Target
 						}
 					}
 				}
-				instanceCount := len(seenInstances)
-				if healthCheckFailed {
-					instanceCount = -1
+				instanceCount := -1
+				if !healthCheckFailed {
+					live, liveErr := a.countLiveTargets(ctx, region, targets)
+					if liveErr != nil {
+						core.Warnf(ctx, "target liveness lookup failed for %s in %s: %v — marking instance count unknown", *name, region, liveErr)
+					} else {
+						instanceCount = live
+					}
 				}
 				results = append(results, core.LoadBalancer{
 					Name:            *name,
