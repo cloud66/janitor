@@ -515,13 +515,16 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					lstMarker = listenerOutput.NextMarker
 				}
 
-				// paginate per-LB DescribeTargetGroups (B8) — surface errors.
+				// paginate per-LB DescribeTargetGroups (B8). a failure leaves the count unknown, since a
+				// partial or empty TG list would otherwise read as 0 instances and a DEAD LB.
 				var targetGroupArns []string
+				lookupFailed := false
 				var tgMarker *string
 				for {
 					targetGroupOutput, err := alb.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{LoadBalancerArn: loadBalancerArn, Marker: tgMarker})
 					if err != nil {
 						core.Warnf(ctx, "DescribeTargetGroups failed for %s: %s", *loadBalancerArn, err.Error())
+						lookupFailed = true
 						break
 					}
 					for _, targetGroup := range targetGroupOutput.TargetGroups {
@@ -538,14 +541,16 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 
 				// collect unique targets across all target groups; any error leaves the count unknown (-1).
 				targets := make(map[string]elasticloadbalancingv2types.TargetDescription)
-				healthCheckFailed := false
 				for _, tgArn := range targetGroupArns {
+					if lookupFailed {
+						break
+					}
 					tgArnCopy := tgArn
 					healthOutput, err := alb.DescribeTargetHealth(ctx, &elasticloadbalancingv2.DescribeTargetHealthInput{
 						TargetGroupArn: &tgArnCopy,
 					})
 					if err != nil {
-						healthCheckFailed = true
+						lookupFailed = true
 						break
 					}
 					for _, thd := range healthOutput.TargetHealthDescriptions {
@@ -555,7 +560,7 @@ func (a Aws) LoadBalancersGet(ctx context.Context, flagMock bool) ([]core.LoadBa
 					}
 				}
 				instanceCount := -1
-				if !healthCheckFailed {
+				if !lookupFailed {
 					live, liveErr := a.countLiveTargets(ctx, region, targets)
 					if liveErr != nil {
 						core.Warnf(ctx, "target liveness lookup failed for %s in %s: %v — marking instance count unknown", *name, region, liveErr)

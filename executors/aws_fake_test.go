@@ -158,6 +158,9 @@ type fakeALB struct {
 
 	// injected errors.
 	addTagsErr error
+	// perLBTGErr fails per-LB DescribeTargetGroups on the given page index.
+	perLBTGErr     error
+	perLBTGErrPage int
 
 	// deleteTGFailUntil makes the next N DeleteTargetGroup calls return a
 	// synthetic ResourceInUse error before succeeding on call N+1. drives
@@ -232,11 +235,14 @@ func (f *fakeALB) DescribeTargetGroups(ctx context.Context, in *elasticloadbalan
 	f.log.add("alb.DescribeTargetGroups")
 	// per-LB query: prefer paginated form, fall back to single-page map.
 	if in.LoadBalancerArn != nil {
+		idx := 0
+		if in.Marker != nil {
+			fmt.Sscanf(*in.Marker, "page%d", &idx)
+		}
+		if f.perLBTGErr != nil && idx == f.perLBTGErrPage {
+			return nil, f.perLBTGErr
+		}
 		if pages, ok := f.perLBTargetGroupPages[*in.LoadBalancerArn]; ok {
-			idx := 0
-			if in.Marker != nil {
-				fmt.Sscanf(*in.Marker, "page%d", &idx)
-			}
 			if idx >= len(pages) {
 				return &elasticloadbalancingv2.DescribeTargetGroupsOutput{}, nil
 			}
@@ -1060,6 +1066,36 @@ func TestAws_ALB_InstanceCount_TargetLiveness(t *testing.T) {
 			a := newTestAws(&ec2f, &fakeELB{log: log}, albWithTargets(log, tc.targets))
 			if got := albInstanceCount(t, a); got != tc.want {
 				t.Errorf("InstanceCount = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAws_ALB_TargetGroupLookupFailure_CountUnknown pins that a failed
+// DescribeTargetGroups (first page or a later one) leaves InstanceCount unknown,
+// rather than an empty target list reading as 0 instances and a DEAD LB.
+func TestAws_ALB_TargetGroupLookupFailure_CountUnknown(t *testing.T) {
+	for _, failPage := range []int{0, 1} {
+		t.Run(fmt.Sprintf("fails on page %d", failPage), func(t *testing.T) {
+			log := &callLog{}
+			alb := newFakeALB(log)
+			lbArn, lbName := "arn:alb:tgerr", "alb-tgerr"
+			created := time.Now().Add(-48 * time.Hour)
+			alb.lbPages = []*elasticloadbalancingv2.DescribeLoadBalancersOutput{
+				{LoadBalancers: []elbv2types.LoadBalancer{
+					{LoadBalancerArn: &lbArn, LoadBalancerName: &lbName, CreatedTime: &created},
+				}},
+			}
+			tg1, next := "arn:tg1", "page1"
+			alb.perLBTargetGroupPages[lbArn] = []*elasticloadbalancingv2.DescribeTargetGroupsOutput{
+				{TargetGroups: []elbv2types.TargetGroup{{TargetGroupArn: &tg1}}, NextMarker: &next},
+				{},
+			}
+			alb.perLBTGErr = errors.New("throttled")
+			alb.perLBTGErrPage = failPage
+			a := newTestAws(&fakeEC2{log: log}, &fakeELB{log: log}, alb)
+			if got := albInstanceCount(t, a); got != -1 {
+				t.Errorf("InstanceCount = %d, want -1", got)
 			}
 		})
 	}
